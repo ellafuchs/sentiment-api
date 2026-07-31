@@ -128,7 +128,4 @@ url:  ## Print the live service URL
 
 .PHONY: candidate-url
 candidate-url:  ## Print the candidate revision's own URL
-	@gcloud run services describe $(SERVICE) --project=$(PROJECT) \
-		--region=$(REGION) --flatten='status.traffic[]' \
-		--filter='status.traffic.tag=candidate' \
-		--format='value(status.traffic.url)'
+	@bash -c 'source infra/lib.sh && candidate_url'

@@ -36,22 +36,13 @@
 # =============================================================================
 set -euo pipefail
 
-PROJECT="${PROJECT:-poc-bert-mlops-460289b}"
-REGION="${REGION:-me-west1}"
-REPO="${REPO:-poc-bert}"
-SERVICE="${SERVICE:-sentiment}"
+# shellcheck source=lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 SA_EMAIL="${SA_EMAIL:-sentiment-run@${PROJECT}.iam.gserviceaccount.com}"
 TAG="${TAG:-$(git rev-parse --short HEAD)}"
 
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/sentiment"
-
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-
-describe() {
-  gcloud run services describe "${SERVICE}" \
-    --project="${PROJECT}" --region="${REGION}" "$@"
-}
 
 # --- the tag must mean something ---------------------------------------------
 # Refresh the index first. `git diff-index` compares stat data before content,
@@ -75,9 +66,7 @@ fi
 # traffic list holds more than one entry — the tagged revision sits in it at 0%
 # — so `status.traffic[0]` can name a revision serving nobody, and the recorded
 # way back would point at the thing being replaced.
-PREVIOUS="$(describe --flatten='status.traffic[]' \
-  --filter='status.traffic.percent>0' \
-  --format='value(status.traffic.revisionName)' 2>/dev/null | head -1 || true)"
+PREVIOUS="$(serving_revision)"
 
 say "resolving ${IMAGE}:${TAG}"
 
@@ -101,6 +90,17 @@ printf '  tag      %s\n  digest   %s\n  serving  %s\n' \
 # --cpu-boost              the entire cold start is model load
 # --timeout 60             a prediction is ~50ms; the 300s default just holds sockets
 # --service-account        least privilege: logs only, NOT the default compute SA
+#
+# NOT --allow-unauthenticated, deliberately. Public access is a property of the
+# *service*, not of a revision — the IAM binding outlives every deploy, so
+# re-asserting it on each one is at best a no-op. Setting it requires
+# run.services.setIamPolicy, which `roles/run.developer` does not grant, so CI
+# logged "Setting IAM policy failed" on every deploy: a warning that is noise
+# here and would be the only warning worth reading somewhere else.
+#
+# Granting CI that permission would have fixed the message by making the deploy
+# identity able to expose a private service to the internet. That is a strictly
+# worse trade. `infra/setup.sh` owns the binding, where a human runs it.
 say "deploying ${SERVICE} to ${REGION} (no traffic)"
 gcloud run deploy "${SERVICE}" \
   --image="${IMAGE}@${DIGEST}" \
@@ -116,7 +116,6 @@ gcloud run deploy "${SERVICE}" \
   --concurrency=8 \
   --cpu-boost \
   --timeout=60 \
-  --allow-unauthenticated \
   --service-account="${SA_EMAIL}" \
   --set-env-vars=OMP_NUM_THREADS=2 \
   --labels="git-sha=${TAG}" \
@@ -124,13 +123,7 @@ gcloud run deploy "${SERVICE}" \
 
 REVISION="$(describe --format='value(status.latestCreatedRevisionName)')"
 
-# The tagged URL, dug out of the traffic list. `--flatten` turns the list into
-# one record per entry so `--filter` can pick the tagged one by name; without it
-# the filter matches the whole list or nothing.
-CANDIDATE_URL="$(describe \
-  --flatten='status.traffic[]' \
-  --filter='status.traffic.tag=candidate' \
-  --format='value(status.traffic.url)')"
+CANDIDATE_URL="$(candidate_url)"
 
 [[ -n "${CANDIDATE_URL}" ]] || die "deployed ${REVISION} but it has no candidate URL."
 
@@ -142,16 +135,27 @@ CANDIDATE_URL="$(describe \
 # the cold start: image pull plus 268MB of weights.
 say "waiting for ${CANDIDATE_URL}/readyz"
 READY=""
+LAST_CODE=""
 for _ in $(seq 1 60); do
-  if body="$(curl -fsS --max-time 15 "${CANDIDATE_URL}/readyz" 2>/dev/null)"; then
-    printf '  %s\n' "${body}"
+  LAST_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "${CANDIDATE_URL}/readyz" || true)"
+  if [[ "${LAST_CODE}" == "200" ]]; then
+    printf '  %s\n' "$(curl -fsS --max-time 15 "${CANDIDATE_URL}/readyz")"
     READY=1
     break
+  fi
+  # 403 is not slow-to-start, it is a permission answer, and it will still be
+  # 403 in five minutes. Fail now with the actual cause instead of timing out
+  # and pointing at the logs, where there will be nothing — the request never
+  # reached the container.
+  if [[ "${LAST_CODE}" == "403" ]]; then
+    die "${CANDIDATE_URL}/readyz returned 403 — the service is not public.
+    Public access is a service-level IAM binding this script deliberately does
+    not set. Run:  bash infra/setup.sh"
   fi
   sleep 5
 done
 
-[[ -n "${READY}" ]] || die "deployed ${REVISION} but ${CANDIDATE_URL}/readyz never answered 200.
+[[ -n "${READY}" ]] || die "deployed ${REVISION} but ${CANDIDATE_URL}/readyz never answered 200 (last: ${LAST_CODE}).
     Check:  gcloud run services logs read ${SERVICE} --region ${REGION}"
 
 say "deployed, serving no traffic"

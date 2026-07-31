@@ -23,21 +23,10 @@
 # =============================================================================
 set -euo pipefail
 
-PROJECT="${PROJECT:-poc-bert-mlops-460289b}"
-REGION="${REGION:-me-west1}"
-SERVICE="${SERVICE:-sentiment}"
+# shellcheck source=lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-
-describe() {
-  gcloud run services describe "${SERVICE}" \
-    --project="${PROJECT}" --region="${REGION}" "$@"
-}
-
-CURRENT="$(describe --flatten='status.traffic[]' \
-  --filter='status.traffic.percent>0' \
-  --format='value(status.traffic.revisionName)' | head -1)"
+CURRENT="$(serving_revision)"
 
 [[ -n "${CURRENT}" ]] || die "no revision is serving traffic — nothing to roll back from."
 

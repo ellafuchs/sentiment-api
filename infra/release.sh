@@ -43,34 +43,16 @@
 # =============================================================================
 set -euo pipefail
 
-PROJECT="${PROJECT:-poc-bert-mlops-460289b}"
-REGION="${REGION:-me-west1}"
-SERVICE="${SERVICE:-sentiment}"
+# shellcheck source=lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 CANARY_PERCENT="${CANARY_PERCENT:-10}"
 CANARY_SECONDS="${CANARY_SECONDS:-60}"
 # The gate's own ceiling, from models.yaml. Not a second number to keep in sync.
 MAX_P95_MS="${MAX_P95_MS:-300}"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-
-describe() {
-  gcloud run services describe "${SERVICE}" \
-    --project="${PROJECT}" --region="${REGION}" "$@"
-}
-
-serving_revision() {
-  describe --flatten='status.traffic[]' \
-    --filter='status.traffic.percent>0' \
-    --format='value(status.traffic.revisionName)' | head -1
-}
-
 # --- what are we releasing, and over what -------------------------------------
-REVISION="${REVISION:-$(describe \
-  --flatten='status.traffic[]' \
-  --filter='status.traffic.tag=candidate' \
-  --format='value(status.traffic.revisionName)')}"
+REVISION="${REVISION:-$(candidate_revision)}"
 
 [[ -n "${REVISION}" ]] || die "no candidate revision — run \`make candidate\` first."
 

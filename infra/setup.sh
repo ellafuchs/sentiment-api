@@ -21,6 +21,7 @@ set -euo pipefail
 PROJECT="${PROJECT:-poc-bert-mlops-460289b}"
 REGION="${REGION:-me-west1}"
 REPO="${REPO:-poc-bert}"
+SERVICE="${SERVICE:-sentiment}"
 SA_NAME="${SA_NAME:-sentiment-run}"
 
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
@@ -154,6 +155,36 @@ else
     --member="serviceAccount:${SA_EMAIL}" \
     --role="roles/logging.logWriter" \
     --condition=None >/dev/null
+fi
+
+# --- public access -----------------------------------------------------------
+# Anyone may call this service without credentials. That is a deliberate choice
+# for a demo endpoint, bounded by --max-instances 3 in deploy.sh, and it lives
+# here rather than in the deploy for two reasons.
+#
+# It is a property of the service, not of a revision: the binding outlives every
+# deploy, so asserting it on each one is a no-op that still has to be permitted.
+# And permitting it means granting CI run.services.setIamPolicy — the power to
+# publish a private service to the internet — in order to re-set a flag that was
+# already set. The deploy identity should not be able to change who may call the
+# thing it deploys.
+#
+# Skipped before the service exists; re-run this script after the first deploy.
+say "public access"
+if gcloud run services describe "${SERVICE}" \
+  --project="${PROJECT}" --region="${REGION}" >/dev/null 2>&1; then
+  if gcloud run services get-iam-policy "${SERVICE}" \
+    --project="${PROJECT}" --region="${REGION}" \
+    --format='value(bindings.members)' 2>/dev/null | grep -q allUsers; then
+    ok "allUsers → roles/run.invoker"
+  else
+    add "allUsers → roles/run.invoker"
+    retry gcloud run services add-iam-policy-binding "${SERVICE}" \
+      --project="${PROJECT}" --region="${REGION}" \
+      --member=allUsers --role=roles/run.invoker >/dev/null
+  fi
+else
+  printf '  service does not exist yet — re-run after the first deploy\n'
 fi
 
 # --- keyless CI auth ---------------------------------------------------------
