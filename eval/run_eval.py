@@ -15,8 +15,7 @@ real container.
 
 **Metrics are a file, not console output.** A human reading numbers off a
 terminal cannot gate a deploy; a JSON artifact can. ``gate.py`` consumes this
-file, and the same numbers get baked into the image so ``/metadata`` can report
-how the running model scored.
+file.
 """
 
 from __future__ import annotations
@@ -51,15 +50,24 @@ def load_golden(path: Path) -> list[dict]:
     return rows
 
 
-def wait_for_ready(client: httpx.Client, timeout: float) -> None:
-    """Block until /readyz says the model is loaded, or give up loudly."""
+def wait_for_ready(client: httpx.Client, timeout: float) -> dict:
+    """Block until the service can actually answer, and return its first answer.
+
+    Deliberately probes ``/predict`` rather than a dedicated readiness endpoint.
+    The model loads lazily on first use, so there is no meaningful "ready" state
+    before a real prediction — a successful one proves the weights are loaded
+    *and* inference works, which is a stronger signal than any health check.
+
+    The response also carries ``model_version`` and ``runtime``, which is where
+    the report's provenance comes from.
+    """
     deadline = time.monotonic() + timeout
     last = "no response"
     while time.monotonic() < deadline:
         try:
-            r = client.get("/readyz", timeout=5.0)
+            r = client.post("/predict", json={"texts": ["ready?"]}, timeout=60.0)
             if r.status_code == 200:
-                return
+                return r.json()
             last = f"HTTP {r.status_code}: {r.text[:200]}"
         except httpx.HTTPError as exc:
             last = f"{type(exc).__name__}: {exc}"
@@ -98,7 +106,8 @@ def evaluate(client: httpx.Client, rows: list[dict]) -> tuple[list[str], list[st
     return y_true, y_pred, latencies
 
 
-def build_report(metadata: dict, y_true, y_pred, latencies, labels: list[str]) -> dict:
+def build_report(provenance: dict, y_true, y_pred, latencies, labels: list[str]) -> dict:
+    """``provenance`` is any prediction response — it carries model_version and runtime."""
     m = compute_metrics(y_true, y_pred, labels)
     return {
         # The four numbers the gate reads.
@@ -109,9 +118,8 @@ def build_report(metadata: dict, y_true, y_pred, latencies, labels: list[str]) -
         "n_examples": m.n_examples,
         # Provenance: which artifact produced these numbers. Without this a
         # report is unattributable and therefore useless for comparison.
-        "model_version": metadata.get("model_version"),
-        "runtime": metadata.get("runtime"),
-        "git_sha": metadata.get("git_sha"),
+        "model_version": provenance.get("model_version"),
+        "runtime": provenance.get("runtime"),
         # Detail for humans reading the PR comment.
         "per_class": {k: asdict(v) for k, v in m.per_class.items()},
         "confusion": m.confusion,
@@ -155,25 +163,25 @@ def main(argv: list[str] | None = None) -> int:
     rows = load_golden(args.golden)
     print(f"evaluating {args.url} against {len(rows)} examples from {args.golden.name}")
 
+    # The golden set defines the label universe. Deliberately not asked of the
+    # service: this file stays a black-box HTTP client with no knowledge of how
+    # the thing it measures is built.
+    labels = sorted({r["label"] for r in rows})
+
     with httpx.Client(base_url=args.url.rstrip("/")) as client:
-        wait_for_ready(client, args.ready_timeout)
-
-        metadata = client.get("/metadata", timeout=10.0).json()
-        labels = metadata["labels"]
-
-        # A model that cannot emit a label in the golden set would score 0 and
-        # look like a quality problem. It is a configuration problem, and
-        # saying so here saves an hour of confusion.
-        golden_labels = {r["label"] for r in rows}
-        if not golden_labels <= set(labels):
-            raise SystemExit(
-                f"golden set uses labels {sorted(golden_labels)} but the service emits "
-                f"{sorted(labels)}. These must match — check `labels` in models.yaml."
-            )
-
+        provenance = wait_for_ready(client, args.ready_timeout)
         y_true, y_pred, latencies = evaluate(client, rows)
 
-    report = build_report(metadata, y_true, y_pred, latencies, labels)
+    # A model emitting a label the golden set has never heard of would score 0
+    # and look like a quality problem. It is a configuration problem, and saying
+    # so here saves an hour of confusion.
+    if unknown := sorted(set(y_pred) - set(labels)):
+        raise SystemExit(
+            f"the service returned labels {unknown}, which are not in the golden set "
+            f"({labels}). These must match — check `labels` in models.yaml."
+        )
+
+    report = build_report(provenance, y_true, y_pred, latencies, labels)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
     print_summary(report)

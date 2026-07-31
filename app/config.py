@@ -1,11 +1,3 @@
-"""Typed, validated configuration loaded from ``models.yaml``.
-
-Why this exists as its own module: a typo in ``models.yaml`` should crash the
-process at startup with a message that names the problem, not surface as a
-mystery 500 on the first prediction request. Validation happens once, at load,
-and everything downstream can then trust the config object completely.
-"""
-
 from __future__ import annotations
 
 import os
@@ -33,7 +25,6 @@ class ModelSource(StrEnum):
 class RuntimeKind(StrEnum):
     PYTORCH = "pytorch"
     ONNX = "onnx"
-
 
 class _Strict(BaseModel):
     """Reject unknown keys.
