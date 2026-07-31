@@ -38,3 +38,18 @@ test-model:  ## Slow tests: load the real model and predict (needs `make fetch`)
 .PHONY: run
 run:  ## Serve locally on :8080 with autoreload
 	uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+
+# --- scoring a model -------------------------------------------------------
+# `eval` talks to a RUNNING service over HTTP, the same way a real caller would.
+# Start `make run` in another terminal first.
+
+.PHONY: eval
+eval:  ## Score the running service against the 200-example golden set
+	uv run python -m eval.run_eval --url http://localhost:8080
+
+.PHONY: gate
+gate:  ## Judge eval_report.json against the thresholds in models.yaml
+	uv run python -m eval.gate
+
+.PHONY: score
+score: eval gate  ## eval + gate in one go (needs `make run` in another terminal)
