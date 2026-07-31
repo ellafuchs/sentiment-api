@@ -1,0 +1,30 @@
+# Everything here is excluded from the build context — the tarball Docker
+# uploads to the daemon before the first instruction runs.
+#
+# The two that matter are .venv and .model_cache: together they are ~2.5GB of
+# files the image rebuilds from scratch anyway. Leaving them in turns a
+# ten-second build into a several-minute one and changes nothing about the
+# result.
+
+.venv/
+.model_cache/
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+
+# Test and eval material. The container tests drive the image from outside over
+# HTTP; nothing in here is needed inside it.
+tests/
+eval/
+examples/
+docs/
+infra/
+eval_report.json
+
+Dockerfile
+.dockerignore
+Makefile
+README.md

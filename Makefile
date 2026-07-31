@@ -53,3 +53,22 @@ gate:  ## Judge eval_report.json against the thresholds in models.yaml
 
 .PHONY: score
 score: eval gate  ## eval + gate in one go (needs `make run` in another terminal)
+
+# --- the container ---------------------------------------------------------
+# The image is the artifact that actually ships. Weights are baked in at build
+# time, so `build` is slow the first time and cached afterwards.
+
+IMAGE ?= poc-bert:dev
+
+.PHONY: build
+build:  ## Build the container image (first run downloads torch + weights, ~10 min)
+	docker build -t $(IMAGE) .
+	@docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' $(IMAGE)
+
+.PHONY: test-container
+test-container:  ## Run the tests that drive the built image over HTTP
+	uv run pytest -m container
+
+.PHONY: run-container
+run-container:  ## Serve from the image on :8080, the way Cloud Run will
+	docker run --rm -p 8080:8080 $(IMAGE)

@@ -69,6 +69,40 @@ If a score falls below the limits in `models.yaml`, it says **Gate failed** and 
 
 ---
 
+## Run it in a container
+
+A container is a box holding the service, its Python, its libraries **and** the 268 MB model — one
+artifact that runs the same anywhere. Cloud Run accepts nothing else.
+
+```bash
+make build
+```
+
+First time takes about 10 minutes: it downloads torch and the model *inside* the box. After that
+it's cached and takes seconds. The image is roughly **1.4 GB** — mostly torch.
+
+```bash
+make run-container
+```
+
+Same as `make run`, except nothing on your laptop is involved except Docker. Predictions come back
+identical — `make score` gives the same 0.9000 accuracy either way.
+
+```bash
+make test-container
+```
+
+21 checks against the built image, over real HTTP: does it predict correctly, does it reject bad
+input, does it honour `$PORT`, **does it still work with no internet at all**, is it running as
+root, did any test-only packages sneak in.
+
+That last group is the point. The tests in `tests/` check your *code*. These check the *box* — and
+a perfect codebase still ships broken if the weights weren't copied in.
+
+Recorded numbers are in [docs/architecture.md](docs/architecture.md).
+
+---
+
 ## The files
 
 | File | What it does | When it runs |
@@ -141,6 +175,9 @@ make help
 | `make test-model` | Run the slow tests that load the real AI |
 | `make score` | Grade the model and give a verdict |
 | `make lint` | Check code style |
+| `make build` | Build the container image |
+| `make test-container` | Test the built image over HTTP |
+| `make run-container` | Serve from the image, like the cloud will |
 
 ---
 
@@ -148,7 +185,7 @@ make help
 
 - [x] The service runs on your laptop
 - [x] 200 test sentences and a pass/fail gate
-- [ ] Package it into a container
+- [x] Package it into a container
 - [ ] Put it on Google Cloud so it has a real web address
 - [ ] Make changing the model deploy itself automatically
 - [ ] Make it refuse to deploy a worse model
