@@ -184,3 +184,72 @@ deploy, not this one. A few cents a month against $300 of trial credit.
 
 The service runs as `sentiment-run`, holding `roles/logging.logWriter` and nothing else — not the
 default compute account, which carries Editor.
+
+---
+
+# Phase 4 — what the canary measures
+
+Recorded 2026-07-31, from CD run #3 (`8ed73a7`), which rolled back a healthy revision.
+
+`infra/release.sh` shifts 10% of traffic to a new revision, watches, then promotes or reverts. Its
+first real verdict was a rollback:
+
+```
+requests  37
+failures  1
+p95       337 ms (ceiling 300)
+```
+
+Both numbers were artifacts of how they were taken. `sentiment-00004-joy` was fine.
+
+## The ceiling was measured somewhere else
+
+`max_p95_latency_ms: 300` in `models.yaml` was established by `make score` from a client next to
+`me-west1`. The canary runs on a GitHub runner on another continent and spawns a fresh `curl` per
+request, so every sample carries DNS, TCP and a TLS handshake before the prediction starts.
+
+This is the same mistake the Phase 3 section above already warns about — bare metal timed a loopback
+socket, the container timed a VM boundary, Cloud Run timed the internet, *"three quantities wearing
+the same unit"*. The canary made it four, and then compared across them.
+
+**A latency threshold is not portable across measurement locations.** The fix is not a bigger number;
+a bigger number is wrong from somewhere else. The fix is to stop comparing against a constant: time
+the revision being replaced for `BASELINE_SECONDS` before any traffic moves, then require the
+candidate to be no worse than that by more than 50% *and* 100 ms. Distance, handshake and runner
+speed sit in both numbers and cancel out.
+
+An absolute ceiling remains at 5000 ms, as a catastrophe backstop rather than a performance target.
+`make score` still owns the real latency question, measured where the answer means something.
+
+## 90% of the samples measured the wrong revision
+
+The probes hit the public URL, where the split is 90/10. So ~33 of those 37 requests went to the
+**old** revision, and its latency decided the new one's fate.
+
+The window now probes both: the public URL, which is the only thing that exercises the hostname, the
+split and the load balancer choosing between revisions — and the candidate's own tagged URL, where
+every sample is attributable to the revision under test. Failures are counted per target and the
+rollback message names which one failed, with the status code.
+
+## The timeout was below the cold start
+
+`--max-time 10`, against the **16.55 s** model load recorded above, on revisions running
+`--min-instances 0`. The old revision had been idle, so its first request in the window could not
+have completed. That was the single failure, and one failure aborts a release.
+
+`tests/test_deploy.py` already used 60 s with a comment naming this exact cold start. `release.sh`
+was the outlier. Both revisions are now warmed before timing starts — uncounted, on a 90 s timeout —
+so the cold start is paid outside the measurement instead of being recorded as an outage. Probes
+themselves get 30 s, above the cold start, so a slow request is recorded as *slow* rather than
+counted as *failed*.
+
+## The shape of the bug
+
+Three defects, one root: **every one of them compared quantities that were not the same quantity.**
+A ceiling from a different continent, a p95 from a different revision, a timeout from a warm service
+applied to a cold one. None of them were visible to any test, because all three are properties of
+where and when the measurement is taken — and no test suite takes a measurement anywhere but where
+it runs.
+
+The gate blocking a bad model is Phase 5. This was the gate blocking a good one, which costs less but
+teaches the same lesson: a threshold is only as meaningful as the thing it is compared against.

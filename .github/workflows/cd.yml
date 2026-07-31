@@ -129,14 +129,19 @@ jobs:
       # the moment you want the summary to be accurate.
       - name: Summary
         if: always()
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.GCP_SERVICE }}
         run: |
-          SERVING="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
-            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
-            --flatten='status.traffic[]' --filter='status.traffic.percent>0' \
-            --format='value(status.traffic.revisionName)' | head -1)"
-          URL="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
-            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
-            --format='value(status.url)')"
+          # Through lib.sh, like every other caller. This was the fourth copy of
+          # that query and the one that outlived the fix: `describe` takes
+          # --flatten but rejects --filter, so the inlined version errored on
+          # every run — including the runs where this summary is the only place
+          # that says which revision a rollback left serving.
+          source infra/lib.sh
+          SERVING="$(serving_revision)"
+          URL="$(describe --format='value(status.url)')"
           {
             echo "| | |"
             echo "|---|---|"
