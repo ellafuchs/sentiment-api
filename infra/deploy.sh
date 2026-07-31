@@ -32,6 +32,13 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --- the tag must mean something ---------------------------------------------
+# Refresh the index first. `git diff-index` compares stat data before content,
+# so a fresh clone — every CI checkout — can report files as modified purely
+# because their mtimes are new. Without this the guard below fails a pipeline
+# whose tree is provably clean, which is the worst kind of false positive: it
+# looks like the safety check working.
+git update-index -q --refresh 2>/dev/null || true
+
 if [[ -z "${ALLOW_DIRTY:-}" ]] && ! git diff-index --quiet HEAD -- 2>/dev/null; then
   die "working tree is dirty — commit first, or set ALLOW_DIRTY=1.
     The image tag is a git SHA. Deploying uncommitted code produces a live

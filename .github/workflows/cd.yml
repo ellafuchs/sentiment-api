@@ -1,0 +1,96 @@
+# =============================================================================
+# Continuous deployment.
+#
+# Push to main -> build the image -> push it tagged with the git SHA -> deploy
+# it to Cloud Run by digest.
+#
+# This runs the SAME `make push` and `infra/deploy.sh` you run by hand. That is
+# deliberate and it is the whole design: a pipeline that reimplements the deploy
+# in YAML is a second implementation that drifts from the first, and you find
+# out which one was wrong during an incident. The flags live in deploy.sh; this
+# file only decides *when* deploy.sh runs.
+#
+# No service-account key is stored anywhere. GitHub mints a short-lived OIDC
+# token describing this workflow, and Google exchanges it for an access token
+# that expires in an hour. `infra/setup.sh` configured the trust, restricted to
+# this repository on this branch.
+# =============================================================================
+name: cd
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege, and `id-token: write` is the one that matters — it is what
+# lets the job request an OIDC token. Note `contents: read`: this workflow has
+# no business writing to the repo.
+permissions:
+  contents: read
+  id-token: write
+
+# Deploys must not overlap. Two concurrent runs would race to set traffic and
+# the loser would silently win. `cancel-in-progress: false` because cancelling
+# a deploy halfway leaves the service in whatever state it had reached.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow clone. `git rev-parse --short`
+          # picks the shortest unambiguous length for the objects it can see, so
+          # a shallow clone can abbreviate the same commit differently than your
+          # laptop does — and that string is the image tag.
+          fetch-depth: 0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authorise Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # The runner is amd64, so the `--platform linux/amd64` inside `build-amd64`
+      # is a no-op here. It is not redundant: it is what makes the arm64 laptop
+      # produce the same artifact as this runner.
+      - name: Build and push
+        run: make push
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+
+      - name: Deploy to Cloud Run
+        run: make deploy
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+          REPO: ${{ vars.GCP_AR_REPO }}
+          SERVICE: ${{ vars.GCP_SERVICE }}
+          SA_EMAIL: ${{ vars.GCP_RUNTIME_SA }}
+
+      - name: Summary
+        run: |
+          URL="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
+            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
+            --format='value(status.url)')"
+          REV="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
+            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
+            --format='value(status.latestReadyRevisionName)')"
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`$(git rev-parse --short HEAD)\` |"
+            echo "| revision | \`${REV}\` |"
+            echo "| url | ${URL} |"
+          } >> "$GITHUB_STEP_SUMMARY"

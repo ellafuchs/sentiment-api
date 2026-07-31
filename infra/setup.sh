@@ -174,6 +174,17 @@ fi
 # *any* GitHub repository — anyone's workflow could ask for a token and get one.
 # The binding below restricts it to your repo alone.
 #
+# It restricts it to one *branch* of that repo too, and that part is because the
+# repo is public. Repo-scoping alone would let a token be minted by any workflow
+# in the repo, on any ref. GitHub already refuses `id-token: write` to pull
+# requests from forks, so this is not the fork hole it looks like — but "deploy
+# credentials exist only on main" is a much shorter sentence to verify than
+# "GitHub's fork permission model is correct", and it costs one line.
+#
+# Consequence, so it isn't a surprise later: a workflow on a branch cannot
+# deploy. Anything that needs to (a canary from a release branch, say) needs
+# this condition widened deliberately, which is the point.
+#
 # Skipped until GITHUB_REPO is set, since the binding names the repo and the
 # repo is created at the start of Phase 4.
 if [[ -z "${GITHUB_REPO:-}" ]]; then
@@ -185,6 +196,7 @@ else
   DEPLOYER="deployer@${PROJECT}.iam.gserviceaccount.com"
   POOL="${POOL:-github}"
   PROVIDER="${PROVIDER:-github-oidc}"
+  DEPLOY_REF="${DEPLOY_REF:-refs/heads/main}"
 
   if gcloud iam service-accounts describe "${DEPLOYER}" --project="${PROJECT}" >/dev/null 2>&1; then
     ok "${DEPLOYER}"
@@ -221,17 +233,37 @@ else
       --project="${PROJECT}" --location=global --display-name="GitHub Actions"
   fi
 
+  CONDITION="assertion.repository == '${GITHUB_REPO}' && assertion.ref == '${DEPLOY_REF}'"
+  MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref"
+
   if gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
     --project="${PROJECT}" --location=global --workload-identity-pool="${POOL}" >/dev/null 2>&1; then
-    ok "provider ${PROVIDER}"
+    # Exists — but the condition is the whole security control, so verify it
+    # rather than assume. An earlier run of this script (or a hand-typed
+    # command) may have left a weaker one, and a provider that trusts more than
+    # you think looks exactly like one that doesn't.
+    current="$(gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
+      --project="${PROJECT}" --location=global --workload-identity-pool="${POOL}" \
+      --format='value(attributeCondition)')"
+    if [[ "${current}" == "${CONDITION}" ]]; then
+      ok "provider ${PROVIDER}"
+    else
+      add "provider ${PROVIDER} — tightening condition"
+      printf '    was: %s\n    now: %s\n' "${current:-<none>}" "${CONDITION}"
+      retry gcloud iam workload-identity-pools providers update-oidc "${PROVIDER}" \
+        --project="${PROJECT}" --location=global \
+        --workload-identity-pool="${POOL}" \
+        --attribute-mapping="${MAPPING}" \
+        --attribute-condition="${CONDITION}"
+    fi
   else
     add "provider ${PROVIDER}"
     retry gcloud iam workload-identity-pools providers create-oidc "${PROVIDER}" \
       --project="${PROJECT}" --location=global \
       --workload-identity-pool="${POOL}" \
       --issuer-uri="https://token.actions.githubusercontent.com" \
-      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
-      --attribute-condition="assertion.repository == '${GITHUB_REPO}'"
+      --attribute-mapping="${MAPPING}" \
+      --attribute-condition="${CONDITION}"
   fi
 
   # Only this repository may impersonate the deployer.

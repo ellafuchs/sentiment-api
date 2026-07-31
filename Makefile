@@ -85,9 +85,10 @@ run-container:  ## Serve from the image on :8080, the way Cloud Run will
 
 PROJECT ?= poc-bert-mlops-460289b
 REGION  ?= me-west1
+REPO    ?= poc-bert
 SERVICE ?= sentiment
 GIT_SHA ?= $(shell git rev-parse --short HEAD)
-REMOTE  ?= $(REGION)-docker.pkg.dev/$(PROJECT)/poc-bert/sentiment
+REMOTE  ?= $(REGION)-docker.pkg.dev/$(PROJECT)/$(REPO)/sentiment
 
 .PHONY: build-amd64
 build-amd64:  ## Build for Cloud Run's architecture (this laptop is arm64)
