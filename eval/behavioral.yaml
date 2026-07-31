@@ -1,0 +1,103 @@
+# =============================================================================
+# BEHAVIORAL TESTS
+#
+# Accuracy is an average, and averages hide their failures. A model can score
+# 90% on the golden set while being catastrophically wrong on negation — which
+# is precisely the failure a sentiment API cannot afford, because "not great"
+# reading as POSITIVE is worse than no answer at all.
+#
+# These tests assert *properties* instead of averages, following the CheckList
+# methodology (Ribeiro et al., 2020 — https://arxiv.org/abs/2005.04118).
+# Four kinds:
+#
+#   minimum_functionality  cases so obvious that failing one means the model
+#                          is broken, whatever its accuracy says
+#   invariance             changes that must NOT alter the label
+#   directional            changes that MUST alter the label
+#   robustness             degraded input that should still work
+#
+# Every case here must pass for a model to ship. Unlike the accuracy gate,
+# there is no threshold to tune — these are pass/fail.
+# =============================================================================
+
+minimum_functionality:
+  description: Unambiguous sentiment. Failing any of these means the model is broken.
+  cases:
+    - text: "I love this."
+      expect: POSITIVE
+    - text: "This is wonderful."
+      expect: POSITIVE
+    - text: "Absolutely fantastic, I am delighted."
+      expect: POSITIVE
+    - text: "Best purchase I have ever made."
+      expect: POSITIVE
+    - text: "I hate this."
+      expect: NEGATIVE
+    - text: "This is awful."
+      expect: NEGATIVE
+    - text: "Completely terrible, I am disgusted."
+      expect: NEGATIVE
+    - text: "Worst experience of my life."
+      expect: NEGATIVE
+
+invariance:
+  description: >
+    Cosmetic edits must not flip the label. A model whose answer depends on
+    trailing punctuation is keying on something other than sentiment, and will
+    behave unpredictably on real user input.
+  cases:
+    - name: trailing period
+      variants: ["The acting was superb", "The acting was superb."]
+    - name: trailing exclamation
+      variants: ["What a great film", "What a great film!"]
+    - name: leading and trailing whitespace
+      variants: ["A dull, lifeless movie.", "   A dull, lifeless movie.   "]
+    - name: uppercase
+      variants: ["This was a beautiful story.", "THIS WAS A BEAUTIFUL STORY."]
+    - name: lowercase
+      variants: ["A Complete Waste Of Money.", "a complete waste of money."]
+    - name: neutral name substitution
+      variants:
+        - "Sarah thought the film was brilliant."
+        - "David thought the film was brilliant."
+
+directional:
+  description: >
+    Meaning-changing edits MUST flip the label. Negation is the classic failure
+    mode for sentiment models — it is a small surface edit that completely
+    inverts intent, and a bag-of-words-ish model gets it exactly backwards.
+  cases:
+    - name: negate positive
+      text: "The food was great"
+      flipped: "The food was not great"
+      expect: POSITIVE
+      expect_flipped: NEGATIVE
+    - name: negate recommendation
+      text: "I would recommend this to a friend"
+      flipped: "I would not recommend this to a friend"
+      expect: POSITIVE
+      expect_flipped: NEGATIVE
+    - name: negate enjoyment
+      text: "I enjoyed every minute of it"
+      flipped: "I did not enjoy a single minute of it"
+      expect: POSITIVE
+      expect_flipped: NEGATIVE
+    - name: negate negative
+      text: "This was a disappointing experience"
+      flipped: "This was not a disappointing experience at all"
+      expect: NEGATIVE
+      expect_flipped: POSITIVE
+
+robustness:
+  description: >
+    Real input is messy. Typos and informal writing should degrade the score,
+    not invert the answer.
+  cases:
+    - text: "I lvoe this moive, its fantasic"
+      expect: POSITIVE
+    - text: "teh worst thing i have evr seen"
+      expect: NEGATIVE
+    - text: "sooooo good!!!!"
+      expect: POSITIVE
+    - text: "ugh. just... no."
+      expect: NEGATIVE

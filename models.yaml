@@ -1,0 +1,40 @@
+# =============================================================================
+# THE SWAP POINT
+#
+# This file decides which AI the service runs. Change it, and the service
+# serves a different model — no code changes.
+#
+# Later phases add a pipeline around it: editing this file opens a PR, the PR
+# gets tested and scored, and it only reaches production if it passes.
+# =============================================================================
+
+model:
+  source: hf # download from the HuggingFace Hub
+  id: distilbert-base-uncased-finetuned-sst-2-english
+
+  # Pinned to a commit, never a branch name. A branch can move underneath you;
+  # a commit cannot. This is what makes one git commit mean one exact model.
+  revision: 714eb0fa89d2f80546fda750413ed43d93601a13
+
+  # Optional. Some checkpoints call their classes LABEL_0 / LABEL_1, which
+  # means nothing. When that happens, spell out which index is which here:
+  #   labels:
+  #     0: NEGATIVE
+  #     1: POSITIVE
+
+runtime:
+  # pytorch -> implemented
+  # onnx    -> Phase 7. Selecting it today raises a clear error.
+  kind: pytorch
+
+gate:
+  # Not used yet — Phase 1 builds the scoring, Phase 5 enforces it.
+  # Absolute floors: a model below any of these never reaches production.
+  min_accuracy: 0.88
+  min_macro_f1: 0.87
+  max_p95_latency_ms: 300
+
+  # Relative floor, measured against whatever is currently live. This is the
+  # one that catches quiet decay: a model at 0.885 clears min_accuracy while
+  # being meaningfully worse than the 0.90 already in production.
+  max_accuracy_regression: 0.02

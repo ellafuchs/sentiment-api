@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Model weights are fetched at build time, never committed.
+.model_cache/
+*.onnx
+
+# Eval output is a build artifact, not source.
+eval_report.json
+
+.DS_Store
+.env
