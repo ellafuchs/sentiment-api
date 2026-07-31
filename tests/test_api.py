@@ -170,8 +170,23 @@ def test_openapi_schema_is_served(client):
 # --------------------------------------------------------------------------
 
 
-def test_healthz_is_ok(client):
-    assert client.get("/healthz").json() == {"status": "ok"}
+def test_livez_is_ok(client):
+    assert client.get("/livez").json() == {"status": "ok"}
+
+
+def test_liveness_is_not_spelled_healthz(client):
+    """The conventional name is the one that does not work in production.
+
+    Google's edge intercepts ``/healthz`` on ``*.run.app`` and answers its own
+    404 before Cloud Run sees the request, so the endpoint passed every test
+    while being unreachable by anything outside the container. This test exists
+    because the natural instinct on reading ``/livez`` is to "fix" it back to
+    the conventional spelling, and nothing else in the suite would object.
+
+    See the docstring on ``app.main.livez`` for the measurement.
+    """
+    assert client.get("/healthz").status_code == 404
+    assert "/healthz" not in client.get("/openapi.json").json()["paths"]
 
 
 def test_readyz_reports_the_loaded_model(client):

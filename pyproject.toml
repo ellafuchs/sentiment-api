@@ -42,6 +42,7 @@ addopts = "-q --strict-markers"
 markers = [
     "container: tests that require a running container (deselect with '-m \"not container\"')",
     "model: tests that load the real model weights — slow, needs `make fetch`",
+    "deploy: tests that drive a deployed revision over HTTP — needs $DEPLOY_URL",
 ]
 
 [tool.ruff]

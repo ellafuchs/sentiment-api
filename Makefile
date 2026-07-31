@@ -29,7 +29,7 @@ fetch:  ## Download model weights into .model_cache/ (per models.yaml)
 
 .PHONY: test
 test:  ## Fast tests: unit + contract, no model download
-	uv run pytest -m "not container and not model"
+	uv run pytest -m "not container and not model and not deploy"
 
 .PHONY: test-model
 test-model:  ## Slow tests: load the real model and predict (needs `make fetch`)
@@ -98,11 +98,37 @@ build-amd64:  ## Build for Cloud Run's architecture (this laptop is arm64)
 push: build-amd64  ## Build amd64 and push it, tagged with the current git SHA
 	docker push $(REMOTE):$(GIT_SHA)
 
-.PHONY: deploy
-deploy:  ## Deploy that image to Cloud Run (resolves the tag to a digest first)
+# Deploying and releasing are separate on purpose — see infra/deploy.sh. The
+# three targets below are the three decisions: put it there, let it serve, take
+# it back.
+
+.PHONY: candidate
+candidate:  ## Deploy to Cloud Run serving NO traffic, and smoke test it
 	infra/deploy.sh
+
+.PHONY: release
+release:  ## Send the candidate 10% of traffic, watch, then 100%
+	infra/release.sh
+
+.PHONY: rollback
+rollback:  ## Send 100% of traffic back to the previous revision
+	infra/rollback.sh
+
+.PHONY: deploy
+deploy: candidate release  ## candidate + release in one go
+
+.PHONY: smoke
+smoke:  ## Drive a deployed revision over HTTP (needs DEPLOY_URL)
+	uv run pytest -m deploy
 
 .PHONY: url
 url:  ## Print the live service URL
 	@gcloud run services describe $(SERVICE) --project=$(PROJECT) \
 		--region=$(REGION) --format='value(status.url)'
+
+.PHONY: candidate-url
+candidate-url:  ## Print the candidate revision's own URL
+	@gcloud run services describe $(SERVICE) --project=$(PROJECT) \
+		--region=$(REGION) --flatten='status.traffic[]' \
+		--filter='status.traffic.tag=candidate' \
+		--format='value(status.traffic.url)'

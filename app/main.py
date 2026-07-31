@@ -47,13 +47,26 @@ def get_model_if_loaded(request: Request) -> Model | None:
     return getattr(request.app.state, "model", None)
 
 
-@app.get("/healthz")
-def healthz() -> dict[str, str]:
+@app.get("/livez")
+def livez() -> dict[str, str]:
     """Liveness: this process is running. Deliberately touches nothing else.
 
     Kept separate from ``/readyz`` because the two answer different questions,
     and an orchestrator acts differently on each: liveness failing means
     *restart me*, readiness failing means *don't send me traffic yet*.
+
+    **Do not rename this to /healthz.** That is the conventional spelling and it
+    is the one path here that does not work. Google's edge intercepts ``/healthz``
+    on ``*.run.app`` before it reaches Cloud Run at all: the reply is a Google
+    HTML 404 carrying neither ``server: Google Frontend`` nor a trace header,
+    while ``/nonexistent`` on the same host returns this app's own JSON 404.
+    Measured on revision ``sentiment-00002-nfs``; ``/livez``, ``/health``,
+    ``/live``, ``/status`` and ``/readyz`` all reach the app normally.
+
+    Nothing in this repo depended on it — Cloud Run's startup probe is TCP — so
+    the endpoint was simply unreachable in production while passing every test,
+    which is the failure mode this project exists to make visible. It was the
+    deploy smoke test that caught it, on its first run.
     """
     return {"status": "ok"}
 

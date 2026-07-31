@@ -1,8 +1,21 @@
 # =============================================================================
 # Continuous deployment.
 #
-# Push to main -> build the image -> push it tagged with the git SHA -> deploy
-# it to Cloud Run by digest.
+# Push to main -> build -> deploy serving nothing -> smoke test it -> 10% canary
+# -> 100%.
+#
+# The shape is the point. A pipeline that builds and immediately serves has one
+# decision in it; this has three, and each one can say no:
+#
+#   deploy    the revision exists and answers, on production hardware, at its
+#             own private URL, with zero users on it
+#   smoke     pytest -m deploy against that URL — including the check that the
+#             thing answering is the image this commit built
+#   release   a tenth of traffic, watched, before all of it
+#
+# A bad revision caught at step 2 was seen by nobody. Caught at step 3, by a
+# tenth of callers for sixty seconds. The old revision is still there and still
+# warm the whole time, which is why `make rollback` takes seconds.
 #
 # This runs the SAME `make push` and `infra/deploy.sh` you run by hand. That is
 # deliberate and it is the whole design: a pipeline that reimplements the deploy
@@ -70,8 +83,12 @@ jobs:
           PROJECT: ${{ vars.GCP_PROJECT }}
           REGION: ${{ vars.GCP_REGION }}
 
-      - name: Deploy to Cloud Run
-        run: make deploy
+      # Creates the revision with --no-traffic --tag=candidate and waits for its
+      # /readyz. Nothing is serving it yet. Emits revision / candidate_url /
+      # previous to $GITHUB_OUTPUT.
+      - name: Deploy (no traffic)
+        id: deploy
+        run: infra/deploy.sh
         env:
           PROJECT: ${{ vars.GCP_PROJECT }}
           REGION: ${{ vars.GCP_REGION }}
@@ -79,18 +96,57 @@ jobs:
           SERVICE: ${{ vars.GCP_SERVICE }}
           SA_EMAIL: ${{ vars.GCP_RUNTIME_SA }}
 
+      # uv only enters the picture here — the build and deploy steps above need
+      # nothing but docker and gcloud.
+      #
+      # This installs torch to run a test that speaks nothing but HTTP, because
+      # `test_deploy.py` imports `app.config` for the expected model version and
+      # torch is a project dependency. That is a deliberate trade: the
+      # alternative is re-deriving the version string inside the test, i.e. a
+      # second copy of the rule that decides what a model is called, which is
+      # the exact duplication the test exists to catch. The cache makes it ~30s
+      # after the first run.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Smoke test the candidate
+        run: make smoke
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.candidate_url }}
+
+      - name: Release (canary, then all)
+        run: infra/release.sh
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.GCP_SERVICE }}
+          REVISION: ${{ steps.deploy.outputs.revision }}
+
+      # `always()` so a failed canary still reports which revision is serving —
+      # which, after a rollback, is not the one this run built. That is exactly
+      # the moment you want the summary to be accurate.
       - name: Summary
+        if: always()
         run: |
+          SERVING="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
+            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
+            --flatten='status.traffic[]' --filter='status.traffic.percent>0' \
+            --format='value(status.traffic.revisionName)' | head -1)"
           URL="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
             --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
             --format='value(status.url)')"
-          REV="$(gcloud run services describe "${{ vars.GCP_SERVICE }}" \
-            --project="${{ vars.GCP_PROJECT }}" --region="${{ vars.GCP_REGION }}" \
-            --format='value(status.latestReadyRevisionName)')"
           {
             echo "| | |"
             echo "|---|---|"
             echo "| commit | \`$(git rev-parse --short HEAD)\` |"
-            echo "| revision | \`${REV}\` |"
+            echo "| built | \`${{ steps.deploy.outputs.revision }}\` |"
+            echo "| **serving** | \`${SERVING}\` |"
+            echo "| previous | \`${{ steps.deploy.outputs.previous }}\` |"
             echo "| url | ${URL} |"
+            if [ "${SERVING}" != "${{ steps.deploy.outputs.revision }}" ]; then
+              echo ""
+              echo "> This run did **not** release. \`${SERVING}\` is still serving."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
