@@ -54,9 +54,10 @@ def wait_for_ready(client: httpx.Client, timeout: float) -> dict:
     """Block until the service can actually answer, and return its first answer.
 
     Deliberately probes ``/predict`` rather than a dedicated readiness endpoint.
-    The model loads lazily on first use, so there is no meaningful "ready" state
-    before a real prediction — a successful one proves the weights are loaded
-    *and* inference works, which is a stronger signal than any health check.
+    What we are waiting for is the process to finish starting — it loads its
+    weights before it accepts traffic — and a successful prediction proves the
+    model is loaded *and* inference works end to end, which is a stronger signal
+    than any health check that only reports the process is alive.
 
     The response also carries ``model_version`` and ``runtime``, which is where
     the report's provenance comes from.

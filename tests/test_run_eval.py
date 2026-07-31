@@ -12,6 +12,8 @@ transport — no network, no server, no weights, milliseconds. Every HTTP call
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -36,15 +38,20 @@ class FakeModel:
 
 
 @pytest.fixture
-def client(monkeypatch) -> httpx.Client:
+def client() -> Iterator[httpx.Client]:
     """A client wired straight into the app. No server, no sockets, no weights.
 
     ``TestClient`` subclasses ``httpx.Client``, so the eval harness cannot tell
     it apart from the real thing — which is exactly what makes these tests
     exercise the genuine HTTP paths.
+
+    Overriding ``get_model`` keeps the real checkpoint out of it. Note the
+    client is deliberately not built with ``with``: the context-manager form
+    runs the app's lifespan, which would load the real weights.
     """
-    monkeypatch.setattr(main, "model", FakeModel())
-    return TestClient(main.app)
+    main.app.dependency_overrides[main.get_model] = lambda: FakeModel()
+    yield TestClient(main.app)
+    main.app.dependency_overrides.clear()
 
 
 # --------------------------------------------------------------------------
@@ -124,7 +131,7 @@ def test_evaluate_sends_one_text_per_request(client):
             seen.append(len(texts))
             return super().predict(texts)
 
-    main.model = Counting()
+    main.app.dependency_overrides[main.get_model] = lambda: Counting()
     evaluate(client, ROWS)
     assert set(seen) == {1}
 

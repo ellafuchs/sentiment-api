@@ -10,6 +10,8 @@ this file, the change broke the API, not just the model.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,20 +39,23 @@ class FakeModel:
 
 
 @pytest.fixture
-def fake(monkeypatch) -> FakeModel:
+def fake() -> Iterator[FakeModel]:
     """Swap the real model for a fake one.
 
-    ``main.get_model()`` returns ``main.model`` if it is already set, so putting
-    a fake there means the real 268MB checkpoint is never loaded. This is the
+    ``get_model`` is the endpoint's only route to the model, so overriding that
+    one dependency means the real 268MB checkpoint is never loaded. This is the
     only reason the suite runs in seconds.
     """
     stub = FakeModel()
-    monkeypatch.setattr(main, "model", stub)
-    return stub
+    main.app.dependency_overrides[main.get_model] = lambda: stub
+    yield stub
+    main.app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def client(fake: FakeModel) -> TestClient:
+    # Deliberately not `with TestClient(...)`: the context-manager form runs the
+    # app's lifespan, which would load the real weights and make this suite slow.
     return TestClient(main.app)
 
 

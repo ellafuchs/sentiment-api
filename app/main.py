@@ -1,39 +1,48 @@
 """The sentiment service.
-
 One endpoint: POST /predict. Send texts, get labels back.
-
-Health checks, readiness probes and a /metadata endpoint all belong here
-eventually — but each one arrives in the phase that needs it (Phase 3 for the
-cloud, Phase 5 for the gate), not before.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, Request
 
 from app.config import load_config
-from app.model import SentimentModel, default_model_dir
+from app.model import Model, SentimentModel, default_model_dir
 from app.schemas import PredictionOut, PredictRequest, PredictResponse
 
-app = FastAPI(title="Sentiment API", version="0.1.0")
 
-# Loaded on first use, then reused forever. Loading takes ~2 seconds and a
-# request takes ~20 milliseconds, so loading per-request would make every call
-# a hundred times slower. Tests replace this with a fake.
-model: SentimentModel | None = None
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Load the model once, at startup — before the first request arrives.
+
+    Loading here rather than on first use is what makes a bad revision, missing
+    weights or an unusable label mapping kill the process at boot, where an
+    orchestrator can see it. Lazily, the same faults surface as a 500 to a real
+    caller long after the deploy went green — and config.py already goes to
+    trouble to fail early, which this would otherwise throw away.
+    """
+    app.state.model = SentimentModel.load(load_config(), default_model_dir())
+    yield
 
 
-def get_model() -> SentimentModel:
-    global model
-    if model is None:
-        model = SentimentModel.load(load_config(), default_model_dir())
-    return model
+app = FastAPI(title="Sentiment API", version="0.1.0", lifespan=lifespan)
+
+
+def get_model(request: Request) -> Model:
+    """The endpoint's only route to the model. Overridable in tests."""
+    return request.app.state.model
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(payload: PredictRequest) -> PredictResponse:
+def predict(
+    payload: PredictRequest,
+    m: Annotated[Model, Depends(get_model)],
+) -> PredictResponse:
     """Classify a batch of texts. One forward pass for the whole list."""
-    m = get_model()
     predictions = m.predict(payload.texts)
     return PredictResponse(
         predictions=[PredictionOut(label=p.label, score=p.score) for p in predictions],
