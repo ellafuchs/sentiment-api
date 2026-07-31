@@ -208,7 +208,12 @@ anywhere, forever, for anyone who reads it. Here there's no key to leak.
 | `app/main.py` | The web part — receives requests, sends answers | every request |
 | `eval/run_eval.py` | Sends the 200 test sentences, records the scores | `make score` |
 | `eval/gate.py` | Reads the scores, says pass or fail | `make score` |
-| `tests/` | 116 automated checks | `make test` |
+| `tests/` | 120 automated checks | `make test` |
+| `infra/setup.sh` | Creates the Google Cloud pieces, once | by hand, rarely |
+| `infra/deploy.sh` | Puts a new version there, serving nobody | every push to main |
+| `infra/release.sh` | Gives it traffic, gradually | every push to main |
+| `infra/rollback.sh` | Takes the traffic back | when something's wrong |
+| `.github/workflows/cd.yml` | Runs those three in order | every push to main |
 
 The AI itself lives in `.model_cache/` and is **not** in git — 255 MB of numbers doesn't belong in
 version control. Git stores the *reference* to the model; the reference is three lines in

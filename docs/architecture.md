@@ -265,10 +265,25 @@ the same window — the candidate at its tagged URL, the baseline through the pu
 runner speed and regional weather hit both samples equally and divide out:
 
 ```
-  candidate  45 requests, 0 failed, p95 144 ms
+  candidate  45 requests, 0 failed, p95 144 ms      ← run from a laptop in Israel
   baseline   45 requests,           p95 136 ms
   allowed    204 ms  (150% of baseline)
 ```
+
+```
+  candidate  38 requests, 0 failed, p95 388 ms      ← the same two revisions, from CI
+  baseline   38 requests,           p95 334 ms
+  allowed    501 ms  (150% of baseline)
+```
+
+**Those two blocks settle it.** Identical revisions, minutes apart. The absolute numbers move by
+2.4×; the ratio between them barely moves at all — 6% from the laptop, 16% from the runner. Only one
+of those quantities is a property of the software.
+
+And look at the baseline row from CI: **334 ms**, for the revision that had been serving production
+without complaint for hours. The original check would have failed a perfectly good deploy for being
+indistinguishable from the thing already live — while reporting the number that had been serving all
+along as a violation. A threshold that rejects the incumbent is not measuring the candidate.
 
 An absolute backstop of 3000 ms stays, because a ratio alone would happily promote a revision that
 is uniformly catastrophic on both sides. It means *broken*, not *far away*.
@@ -307,13 +322,24 @@ service to the internet. `--allow-unauthenticated` moved out of the per-deploy p
 
 ## Rollback is a traffic change
 
-22 s cold, 4 s warm, versus the ~4 minutes a rebuild-and-redeploy would take. The old revision was
-never deleted — still built, still configured, receiving nothing — so recovery repoints a router.
-That is why revisions are immutable and kept, and why `deploy.sh` refuses to reuse a tag.
+Exercised for real, four times, on a healthy service:
 
-It is also on `workflow_dispatch`, so it runs from the GitHub mobile app without a laptop. An
-emergency control that needs your development machine has a precondition nobody checks until the
-emergency.
+| Path | Time | |
+|---|---|---|
+| `make rollback` | **22 s** | cold target |
+| `make rollback` | **4 s** | target still warm |
+| Actions → Rollback | **24 s** | no laptop involved |
+| Actions → Rollback, `revision=…` | **~20 s** | explicit target |
+
+Against the ~4 minutes a rebuild-and-redeploy would take. The old revision was never deleted — still
+built, still configured, receiving nothing — so recovery repoints a router. That is why revisions are
+immutable and kept, and why `deploy.sh` refuses to reuse a tag.
+
+The `workflow_dispatch` trigger is not a convenience. An emergency control that requires a laptop
+with authenticated gcloud has a precondition nobody checks until the emergency, and "can you get to
+your machine" is a bad first question during an incident. Same script, second trigger — `make
+rollback` and the workflow both call `infra/rollback.sh`, so there is no second implementation to
+drift.
 
 What it does *not* do is revert the commit. `main` still wants the bad version and the next push
 deploys it again. Rolling back buys time; it is not the fix.
