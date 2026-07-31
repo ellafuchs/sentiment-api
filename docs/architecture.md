@@ -184,3 +184,142 @@ deploy, not this one. A few cents a month against $300 of trial credit.
 
 The service runs as `sentiment-run`, holding `roles/logging.logWriter` and nothing else — not the
 default compute account, which carries Editor.
+
+---
+
+# Phase 4 — it deploys itself
+
+Recorded 2026-07-31. `github.com/ellafuchs/sentiment-api` → push to `main` →
+`build → deploy at 0% → smoke test → 10% canary → 100%`.
+
+## The numbers
+
+| | Value | How |
+|---|---|---|
+| Push to live | **~4 min** | 199s for the v1 pipeline; 272s with smoke test and canary |
+| Build + push | **~110 s** | amd64 on an ubuntu-latest runner, no cache |
+| Deploy to `/readyz` | **~70 s** | includes the candidate's cold start |
+| Canary | **60 s** | 45 probes to each side |
+| Rollback | **22 s** cold, **4 s** warm | `infra/rollback.sh`, measured both ways |
+| Live gate | **0.9000 / 0.8997** | `make score URL=…`, p95 83.8 ms against 300 ms |
+
+Accuracy is the same 0.9000 / 0.8997 as bare metal, the container and Phase 3. Four environments now.
+
+## Three things this phase found
+
+Each was invisible to a green test suite, which is the argument for the phase existing.
+
+### `/healthz` never worked in production
+
+Google's edge intercepts that exact path on `*.run.app` and answers its own 404 before the request
+reaches Cloud Run. The evidence is in the headers:
+
+```
+/readyz       200  server: Google Frontend   x-cloud-trace-context: 3a6c…
+/nonexistent  404  server: Google Frontend   x-cloud-trace-context: 90a9…   {"detail":"Not Found"}
+/healthz      404  (no server header, no trace id)                          <Google HTML>
+```
+
+`/nonexistent` reaches the app and gets FastAPI's JSON. `/healthz` never arrives. Probing nine
+candidate paths, exactly one is intercepted — `/livez`, `/health`, `/live`, `/healthcheck`,
+`/_health`, `/status`, `/ready` and `/alive` all reach the app.
+
+So the endpoint passed 119 unit tests and 21 container tests while being unreachable by anything
+outside the container. Renamed `/livez`. There is now a test asserting `/healthz` stays 404, because
+the instinct on reading `/livez` is to correct it back and nothing else in the suite would object.
+
+**It was found by `tests/test_deploy.py` on that file's first run** — the first test in this project
+that talks to the deployed service rather than to the code or the image.
+
+### `gcloud run services describe` rejects `--filter`
+
+It describes one resource, so gcloud treats filtering as meaningless and errors rather than ignoring
+it. `--flatten` *is* accepted, so `--flatten … --filter …` reads like the working `list` idiom and
+fails only at runtime. That query had been written three times and run zero times. It is now written
+once, in `infra/lib.sh`, parsing JSON.
+
+A quieter variant of the same bug survived one more commit: in `cd.yml`'s summary the query was
+`… | head -1`, and the exit status of a pipeline is the *last* command's — so gcloud's failure was
+swallowed and the step reported success while printing nothing.
+
+### Latency measured from CI is not latency — the third time
+
+The first canary failed at **p95 337 ms against the 300 ms ceiling in `models.yaml`**, and rolled
+itself back. The revision was fine: probed directly minutes later it answered 10/10 at ~125 ms.
+
+The 300 ms figure was measured from a laptop in Israel. The canary measured from a GitHub runner in
+the United States. Most of that 337 ms was the Atlantic.
+
+| Phase | Number | Blamed on | Actually |
+|---|---|---|---|
+| 2 | 46.2 ms | the container | Docker Desktop's virtualised network |
+| 3 | 156.6 ms | the cloud | the internet between a laptop and me-west1 |
+| 4 | 337 ms | the revision | the distance between a CI runner and me-west1 |
+
+Three phases, one mistake. It is not carelessness about numbers: **latency measured from somewhere is
+not a property of the service**, and every fix that raises the ceiling relocates the same bug. A CI
+runner's location is not knowable in advance and changes between runs.
+
+So the canary compares instead of thresholding. Both revisions are probed from the same runner in
+the same window — the candidate at its tagged URL, the baseline through the public one. Distance,
+runner speed and regional weather hit both samples equally and divide out:
+
+```
+  candidate  45 requests, 0 failed, p95 144 ms
+  baseline   45 requests,           p95 136 ms
+  allowed    204 ms  (150% of baseline)
+```
+
+An absolute backstop of 3000 ms stays, because a ratio alone would happily promote a revision that
+is uniformly catastrophic on both sides. It means *broken*, not *far away*.
+
+The warmup is the other half. A revision at `min-instances 0` that has never taken traffic pays a
+cold start on its first request — image pull plus 16 s of model load — which is what produced the one
+timeout that failed the first canary. Five unmeasured requests first, then measure.
+
+## What the split bought, on its first real failure
+
+The `fe4ff52` run failed at the deploy step. Production did not move: `sentiment-00002` kept serving,
+the broken candidate sat at 0%, and the only cost was four minutes of CI. The `8ed73a7` run failed at
+the canary and returned traffic automatically.
+
+Two pipeline failures, zero user-visible impact. That is the entire argument for deploying and
+releasing being separate verbs.
+
+## Keyless, and scoped tighter than the plan asked
+
+No service-account key exists. GitHub signs an OIDC token describing the workflow; Google exchanges
+it for a one-hour credential. The trust condition is:
+
+```
+assertion.repository == 'ellafuchs/sentiment-api' && assertion.ref == 'refs/heads/main'
+```
+
+The branch clause is not in the roadmap — it was added because the repo is public. GitHub already
+withholds `id-token: write` from fork pull requests, so this is not the fork hole it looks like, but
+"deploy credentials exist only on main" is a much shorter claim to verify than "GitHub's fork
+permission model is correct", and it costs one line.
+
+The deployer holds `run.developer`, `artifactregistry.writer` and `iam.serviceAccountUser` — not
+`run.admin`. It deliberately **cannot** call `setIamPolicy`, so CI has no power to publish a private
+service to the internet. `--allow-unauthenticated` moved out of the per-deploy path and into
+`infra/setup.sh`, where a human runs it; it had been a no-op logging a warning on every deploy.
+
+## Rollback is a traffic change
+
+22 s cold, 4 s warm, versus the ~4 minutes a rebuild-and-redeploy would take. The old revision was
+never deleted — still built, still configured, receiving nothing — so recovery repoints a router.
+That is why revisions are immutable and kept, and why `deploy.sh` refuses to reuse a tag.
+
+It is also on `workflow_dispatch`, so it runs from the GitHub mobile app without a laptop. An
+emergency control that needs your development machine has a precondition nobody checks until the
+emergency.
+
+What it does *not* do is revert the commit. `main` still wants the bad version and the next push
+deploys it again. Rolling back buys time; it is not the fix.
+
+## What this pipeline does not check
+
+It proves the service **works**. It does not prove the model is any **good** — `run_eval.py` and
+`gate.py` run nowhere in CI, so a commit that swapped in a worse model would sail through every step
+here as long as it answered 200s at a reasonable speed. That is Phase 5.

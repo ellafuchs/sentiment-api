@@ -160,6 +160,42 @@ answers. That is what baking the model into the image buys you.
 
 ---
 
+## It deploys itself
+
+You don't run any of those commands any more. Push to `main` and GitHub does it:
+
+```
+build  →  deploy serving 0%  →  smoke test  →  10% for 60s  →  100%
+```
+
+Roughly four minutes. The middle three steps are the interesting ones, because each can say no:
+
+| Step | What it does | If it fails |
+|---|---|---|
+| **deploy** | Creates the revision on real Cloud Run hardware with its own private URL, serving nobody | Nothing changed. The old revision never stopped |
+| **smoke** | `pytest -m deploy` against that private URL | Nobody ever saw it |
+| **release** | 10% of traffic for 60 seconds, then all of it | Traffic goes back automatically |
+
+The old revision stays built and configured the whole time, which is why going back is fast:
+
+```bash
+make rollback
+```
+
+That's a traffic change, not a rebuild — seconds, not the ten minutes a redeploy would take. Run it
+on a good day. A rollback path you've never used is a belief, not a plan.
+
+It's also on **Actions → Rollback → Run workflow**, which is two taps in the GitHub mobile app. Same
+script, second trigger — because an emergency control that needs your laptop has a precondition
+nobody checks until the emergency.
+
+**No password is stored anywhere for this.** GitHub proves who it is with a signed token that expires
+in an hour, and Google is configured to trust it — but only from this repository, only on `main`. The
+usual approach is to paste a Google service-account key into a GitHub secret; that key works from
+anywhere, forever, for anyone who reads it. Here there's no key to leak.
+
+---
+
 ## The files
 
 | File | What it does | When it runs |
@@ -236,8 +272,13 @@ make help
 | `make test-container` | Test the built image over HTTP |
 | `make run-container` | Serve from the image, like the cloud will |
 | `make push` | Build for amd64 and push it, tagged with the git SHA |
-| `make deploy` | Deploy that image to Cloud Run, pinned by digest |
+| `make candidate` | Deploy to Cloud Run serving **no** traffic, and smoke test it |
+| `make smoke` | Drive a deployed revision over HTTP (needs `DEPLOY_URL`) |
+| `make release` | Give the candidate 10% of traffic, watch, then 100% |
+| `make rollback` | Send traffic back to the previous revision (also: Actions → Rollback) |
+| `make deploy` | `candidate` + `release` in one go |
 | `make url` | Print the live service address |
+| `make candidate-url` | Print the candidate revision's own address |
 | `make score URL=…` | Grade whatever is listening at that address |
 
 ---
@@ -249,8 +290,8 @@ make help
 | [x] | The service runs on your laptop | 0 |
 | [x] | 200 test sentences and a pass/fail gate | 1 |
 | [x] | Package it into a container | 2 |
-| [x] | **Put it on Google Cloud so it has a real web address** | **3** |
-| [ ] | Make changing the model deploy itself automatically | 4 |
+| [x] | Put it on Google Cloud so it has a real web address | 3 |
+| [x] | **Make changing the model deploy itself automatically** | **4** |
 | [ ] | Make it refuse to deploy a worse model | 5 |
 | [ ] | Make it faster with a different inference engine | 7 |
 | [ ] | Train your own model and run it through the same checks | 8 |
@@ -259,11 +300,14 @@ The phase numbers are the ones used in commits and `docs/`. They skip around bec
 (0.5, 1.5) were corrections that never got a box here, and phase 6 — proving the gate *blocks* — is
 a demonstration rather than a feature.
 
-**It is on the internet.** The next phase is making a merge deploy it for you.
+**A push to main ships it.** The next phase makes the pipeline refuse to ship a *worse* model — right
+now it checks the service works, not that it's still any good.
 
 ---
 
-## One known problem
+## Two known problems
+
+### The model is wrong about one sentence
 
 The model answers **POSITIVE** to *"I would not recommend this to a friend."*
 
@@ -273,3 +317,19 @@ deleting the check to make the tests green would hide a real weakness.
 It's also the clearest illustration of why this project exists: the service returns `200 OK` with
 99% confidence and is simply wrong. No error, no crash, nothing to alert on. Only a test that
 already knows the right answer can catch it.
+
+### `/healthz` doesn't work, and can't
+
+The liveness endpoint is at **`/livez`**, not the conventional `/healthz`. That isn't a preference.
+
+Google's edge intercepts the exact path `/healthz` on `*.run.app` and answers its own 404 before the
+request reaches Cloud Run at all. Same host, same service: `/nonexistent` comes back as this app's own
+JSON 404, `/healthz` comes back as a Google HTML page with no `server: Google Frontend` header and no
+trace id. `/livez`, `/health`, `/live`, `/status` and `/readyz` all arrive fine.
+
+So the endpoint passed 119 unit tests and 21 container tests while being reachable by nothing outside
+the container. It was found by the deploy smoke test — the first test in this project that talks to
+the *deployed* service — on the first run of that test, which is the entire argument for having one.
+
+There's a test asserting `/healthz` stays a 404, because the natural instinct on reading `/livez` is
+to correct it back, and nothing else in the suite would object.

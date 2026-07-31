@@ -48,8 +48,49 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 CANARY_PERCENT="${CANARY_PERCENT:-10}"
 CANARY_SECONDS="${CANARY_SECONDS:-60}"
-# The gate's own ceiling, from models.yaml. Not a second number to keep in sync.
-MAX_P95_MS="${MAX_P95_MS:-300}"
+
+# -----------------------------------------------------------------------------
+# WHY THIS COMPARES INSTEAD OF THRESHOLDING
+#
+# The first version failed the canary at "p95 337ms against the 300ms ceiling in
+# models.yaml", and the revision was fine — 10/10 at ~125ms probed from a laptop
+# in Israel minutes later. The 300ms number was measured from a laptop in
+# Israel. The canary measured from a GitHub runner in the United States. Tel
+# Aviv is a long way from Iowa, and most of that 337ms was the Atlantic.
+#
+# This project has now made the same mistake three times, in three phases:
+#
+#   Phase 2  46.2ms in the container was blamed on the model, and was Docker
+#            Desktop's virtualised network
+#   Phase 3  156.6ms in the cloud was compared to both, and was mostly the
+#            internet between a laptop and me-west1
+#   here     337ms was compared to a warm laptop-local ceiling, and was mostly
+#            the distance between a CI runner and me-west1
+#
+# The pattern is not carelessness about numbers. It is that latency measured
+# from somewhere is not a property of the service, and every fix that raises the
+# ceiling just relocates the same bug. A CI runner's location is not knowable in
+# advance and changes between runs.
+#
+# So the canary compares rather than thresholds. Both revisions are probed from
+# the *same* runner in the *same* window: the candidate at its tagged URL, the
+# baseline through the public one. Network distance, runner speed and regional
+# weather hit both samples equally and divide out. What survives is the only
+# question a canary can honestly answer — is the new one worse than the one it
+# is replacing?
+#
+# The absolute backstop stays, set high enough to mean "broken" rather than
+# "far away", because a ratio alone would happily promote a revision that is
+# uniformly catastrophic on both sides.
+# -----------------------------------------------------------------------------
+CANARY_MAX_RATIO="${CANARY_MAX_RATIO:-150}"   # candidate p95 vs baseline, percent
+CANARY_ABS_CEILING_MS="${CANARY_ABS_CEILING_MS:-3000}"
+
+# A revision with min-instances 0 that has never taken traffic pays a cold start
+# on its first request: image pull plus 16s of model load. That is a property of
+# scaling to zero, not a defect in the code, and it is what produced the single
+# timeout that failed the first canary. Warm it, then measure.
+CANARY_WARMUP="${CANARY_WARMUP:-5}"
 
 # --- what are we releasing, and over what -------------------------------------
 REVISION="${REVISION:-$(candidate_revision)}"
@@ -91,62 +132,91 @@ else
 fi
 
 # --- step 2: watch ------------------------------------------------------------
-say "watching for ${CANARY_SECONDS}s"
+CAND_URL="$(candidate_url)"
+[[ -n "${CAND_URL}" ]] || die "no candidate URL — cannot measure the new revision on its own."
 
-FAILURES=0
-REQUESTS=0
-LATENCIES="$(mktemp)"
-trap 'rm -f "${LATENCIES}"' EXIT
-
-deadline=$((SECONDS + CANARY_SECONDS))
-while ((SECONDS < deadline)); do
-  start="$(date +%s%N)"
-  if curl -fsS --max-time 10 -X POST "${URL}/predict" \
-    -H 'content-type: application/json' \
-    -d '{"texts":["I love this."]}' >/dev/null 2>&1; then
-    echo $(((  $(date +%s%N) - start ) / 1000000)) >>"${LATENCIES}"
-  else
-    FAILURES=$((FAILURES + 1))
-  fi
-  REQUESTS=$((REQUESTS + 1))
-  sleep 1
-done
-
-# p95 by sorting and indexing. No numpy in a shell script, and for ~60 samples
-# the nearest-rank definition is the honest one anyway.
-P95=0
-if [[ -s "${LATENCIES}" ]]; then
-  n="$(wc -l <"${LATENCIES}")"
-  idx=$(((n * 95 + 99) / 100))
-  ((idx < 1)) && idx=1
-  P95="$(sort -n "${LATENCIES}" | sed -n "${idx}p")"
-fi
-
-printf '  requests  %s\n  failures  %s\n  p95       %s ms (ceiling %s)\n' \
-  "${REQUESTS}" "${FAILURES}" "${P95}" "${MAX_P95_MS}"
-
-# --- step 3: decide -----------------------------------------------------------
-# Any failure aborts. Not a rate, not a threshold: this endpoint answered every
-# one of 200 golden examples and 21 container tests, so a single 5xx during a
-# 60-second window is a change in kind, not degree.
-if ((FAILURES > 0)); then
+abort() {
   say "canary failed — rolling back"
   gcloud run services update-traffic "${SERVICE}" \
     --project="${PROJECT}" --region="${REGION}" \
     --to-revisions="${PREVIOUS}=100" --quiet >/dev/null
-  die "${FAILURES}/${REQUESTS} requests failed during the canary.
+  die "$1
     Traffic returned to ${PREVIOUS}. ${REVISION} is still deployed and
-    inspectable at its candidate URL — it just is not serving anyone."
+    inspectable at ${CAND_URL} — it just is not serving anyone."
+}
+
+# One POST. Prints elapsed ms on success, nothing on failure.
+probe() {
+  local t
+  t="$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 \
+    -X POST "$1/predict" -H 'content-type: application/json' \
+    -d '{"texts":["I love this."]}' 2>/dev/null || true)"
+  [[ "${t%% *}" == "200" ]] || return 1
+  # curl reports seconds with decimals; awk rather than bash, which has no
+  # floating point and would silently truncate 0.9s to 0.
+  awk -v s="${t##* }" 'BEGIN { printf "%d", s * 1000 }'
+}
+
+say "warming ${REVISION} (${CANARY_WARMUP} requests, not measured)"
+for _ in $(seq 1 "${CANARY_WARMUP}"); do probe "${CAND_URL}" >/dev/null || true; done
+
+say "watching for ${CANARY_SECONDS}s"
+printf '  candidate  %s\n  baseline   %s (90%% of traffic)\n' "${CAND_URL}" "${URL}"
+
+CAND_FAILS=0
+CAND_N=0
+CAND_MS="$(mktemp)"
+BASE_MS="$(mktemp)"
+trap 'rm -f "${CAND_MS}" "${BASE_MS}"' EXIT
+
+deadline=$((SECONDS + CANARY_SECONDS))
+while ((SECONDS < deadline)); do
+  if ms="$(probe "${CAND_URL}")"; then echo "${ms}" >>"${CAND_MS}"; else CAND_FAILS=$((CAND_FAILS + 1)); fi
+  CAND_N=$((CAND_N + 1))
+  if ms="$(probe "${URL}")"; then echo "${ms}" >>"${BASE_MS}"; fi
+  sleep 1
+done
+
+# p95 by nearest rank. No numpy in a shell script, and for ~30 samples the
+# nearest-rank definition is the honest one anyway.
+p95() {
+  [[ -s "$1" ]] || { echo 0; return; }
+  local n idx
+  n="$(wc -l <"$1")"
+  idx=$(((n * 95 + 99) / 100))
+  ((idx < 1)) && idx=1
+  sort -n "$1" | sed -n "${idx}p"
+}
+
+CAND_P95="$(p95 "${CAND_MS}")"
+BASE_P95="$(p95 "${BASE_MS}")"
+
+printf '\n  candidate  %s requests, %s failed, p95 %s ms\n  baseline   %s requests, p95 %s ms\n' \
+  "${CAND_N}" "${CAND_FAILS}" "${CAND_P95}" "$(wc -l <"${BASE_MS}" | tr -d ' ')" "${BASE_P95}"
+
+# --- step 3: decide -----------------------------------------------------------
+# Any failure aborts. Not a rate: this endpoint answered all 200 golden examples
+# and 21 container tests, and the cold start that could legitimately time out
+# was spent during warmup. A 5xx here is a change in kind, not degree.
+((CAND_FAILS == 0)) || abort "${CAND_FAILS}/${CAND_N} requests to the candidate failed."
+
+((CAND_N > 0)) || abort "the candidate was never successfully probed."
+
+if ((BASE_P95 > 0)); then
+  ALLOWED=$((BASE_P95 * CANARY_MAX_RATIO / 100))
+  printf '  allowed    %s ms  (%s%% of baseline)\n' "${ALLOWED}" "${CANARY_MAX_RATIO}"
+  ((CAND_P95 <= ALLOWED)) || abort \
+    "candidate p95 ${CAND_P95}ms is more than ${CANARY_MAX_RATIO}% of the baseline's ${BASE_P95}ms.
+    Both were measured from this machine in the same window, so the gap is the
+    revision, not the network."
+else
+  printf '  baseline never answered — falling back to the absolute ceiling alone\n'
 fi
 
-if ((P95 > MAX_P95_MS)); then
-  say "canary too slow — rolling back"
-  gcloud run services update-traffic "${SERVICE}" \
-    --project="${PROJECT}" --region="${REGION}" \
-    --to-revisions="${PREVIOUS}=100" --quiet >/dev/null
-  die "p95 ${P95}ms exceeds the ${MAX_P95_MS}ms ceiling from models.yaml.
-    Traffic returned to ${PREVIOUS}."
-fi
+((CAND_P95 <= CANARY_ABS_CEILING_MS)) || abort \
+  "candidate p95 ${CAND_P95}ms exceeds the ${CANARY_ABS_CEILING_MS}ms backstop.
+    This ceiling means 'broken', not 'far away' — a ratio alone would promote a
+    revision that is uniformly catastrophic on both sides."
 
 # --- step 4: all of it --------------------------------------------------------
 say "promoting ${REVISION} to 100%"

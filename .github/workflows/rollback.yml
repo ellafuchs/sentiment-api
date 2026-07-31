@@ -1,0 +1,88 @@
+# =============================================================================
+# Roll back, from anywhere.
+#
+# Actions → Rollback → Run workflow. Two taps in the GitHub mobile app.
+#
+# `make rollback` already does this and does it faster. It also requires a
+# laptop with gcloud installed and authenticated, which is a strange thing to
+# require of the one command you most want to run when you are not at your desk.
+# An emergency control that only works from your desk is a control with a
+# precondition nobody checks until the emergency.
+#
+# So the same script gets a second trigger. Not a second implementation —
+# `infra/rollback.sh` is the only thing that knows how to move traffic, and this
+# file only decides that it should.
+#
+# `workflow_dispatch` on main satisfies the WIF condition (repo AND
+# refs/heads/main), so this needs no key either.
+#
+# What this does NOT do is revert the commit. main still says the bad version is
+# what it wants, and the next push deploys it again. Rolling back buys time; it
+# is not the fix.
+# =============================================================================
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Revision to roll back to (blank = the one before the current)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+# Shares a group with cd.yml deliberately. A rollback racing a deploy is two
+# processes writing the traffic split with no idea the other exists, and the
+# result is whichever finished last — which is not a coin you want to flip
+# during an incident.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Roll back
+        run: infra/rollback.sh
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.GCP_SERVICE }}
+          TO: ${{ inputs.revision }}
+
+      # Sources the same helper the scripts use, rather than a third copy of
+      # "which revision is serving" — the question this phase already got wrong
+      # once by writing it more than once.
+      - name: Summary
+        if: always()
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ vars.GCP_REGION }}
+          SERVICE: ${{ vars.GCP_SERVICE }}
+        run: |
+          source infra/lib.sh
+          SERVING="$(serving_revision)"
+          {
+            echo "### Rolled back"
+            echo ""
+            echo "Now serving \`${SERVING}\`."
+            echo ""
+            echo "> main still points at the version you rolled away from."
+            echo "> Revert the commit, or the next push deploys it again."
+          } >> "$GITHUB_STEP_SUMMARY"
