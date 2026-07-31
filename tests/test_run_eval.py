@@ -50,6 +50,7 @@ def client() -> Iterator[httpx.Client]:
     runs the app's lifespan, which would load the real weights.
     """
     main.app.dependency_overrides[main.get_model] = lambda: FakeModel()
+    main.app.dependency_overrides[main.get_model_if_loaded] = lambda: FakeModel()
     yield TestClient(main.app)
     main.app.dependency_overrides.clear()
 
@@ -67,7 +68,7 @@ def test_wait_for_ready_succeeds_against_the_real_app(client):
 def test_wait_for_ready_returns_provenance(client):
     """The report's model_version/runtime come from here, not from /metadata."""
     body = wait_for_ready(client, timeout=5.0)
-    assert set(body) >= {"model_version", "runtime", "predictions"}
+    assert set(body) >= {"model_version", "runtime"}
 
 
 def test_every_endpoint_run_eval_uses_actually_exists(client):
@@ -78,7 +79,8 @@ def test_every_endpoint_run_eval_uses_actually_exists(client):
     of after a 120-second timeout in someone's terminal.
     """
     served = set(client.get("/openapi.json").json()["paths"])
-    assert {"/predict"} <= served, f"run_eval needs /predict; app serves {sorted(served)}"
+    needed = {"/predict", "/readyz"}
+    assert needed <= served, f"run_eval needs {sorted(needed)}; app serves {sorted(served)}"
 
 
 def test_wait_for_ready_gives_up_loudly_when_nothing_answers():

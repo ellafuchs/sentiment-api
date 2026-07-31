@@ -193,7 +193,8 @@ def test_openapi_matches_what_the_eval_harness_needs(client: httpx.Client) -> No
     proves the *artifact* does — they can differ, if the wrong files are copied.
     """
     served = set(client.get("/openapi.json").json()["paths"])
-    assert {"/predict"} <= served, f"run_eval needs /predict; image serves {sorted(served)}"
+    needed = {"/predict", "/readyz"}
+    assert needed <= served, f"run_eval needs {sorted(needed)}; image serves {sorted(served)}"
 
 
 # --------------------------------------------------------------------------

@@ -43,9 +43,14 @@ run:  ## Serve locally on :8080 with autoreload
 # `eval` talks to a RUNNING service over HTTP, the same way a real caller would.
 # Start `make run` in another terminal first.
 
+# URL is the one knob: `make score` grades whatever is listening there. Pointing
+# it at Cloud Run is how the deployed service gets scored by the *same* harness
+# that scored the laptop and the container — unmodified.
+URL ?= http://localhost:8080
+
 .PHONY: eval
 eval:  ## Score the running service against the 200-example golden set
-	uv run python -m eval.run_eval --url http://localhost:8080
+	uv run python -m eval.run_eval --url $(URL)
 
 .PHONY: gate
 gate:  ## Judge eval_report.json against the thresholds in models.yaml
@@ -72,3 +77,31 @@ test-container:  ## Run the tests that drive the built image over HTTP
 .PHONY: run-container
 run-container:  ## Serve from the image on :8080, the way Cloud Run will
 	docker run --rm -p 8080:8080 $(IMAGE)
+
+# --- the cloud -------------------------------------------------------------
+# The image tag is always a git SHA. Never `latest`: rollback has to be able to
+# name an exact revision, and `latest` makes "which image was that?" a question
+# with no answer.
+
+PROJECT ?= poc-bert-mlops-460289b
+REGION  ?= me-west1
+SERVICE ?= sentiment
+GIT_SHA ?= $(shell git rev-parse --short HEAD)
+REMOTE  ?= $(REGION)-docker.pkg.dev/$(PROJECT)/poc-bert/sentiment
+
+.PHONY: build-amd64
+build-amd64:  ## Build for Cloud Run's architecture (this laptop is arm64)
+	docker build --platform linux/amd64 -t $(REMOTE):$(GIT_SHA) .
+
+.PHONY: push
+push: build-amd64  ## Build amd64 and push it, tagged with the current git SHA
+	docker push $(REMOTE):$(GIT_SHA)
+
+.PHONY: deploy
+deploy:  ## Deploy that image to Cloud Run (resolves the tag to a digest first)
+	infra/deploy.sh
+
+.PHONY: url
+url:  ## Print the live service URL
+	@gcloud run services describe $(SERVICE) --project=$(PROJECT) \
+		--region=$(REGION) --format='value(status.url)'

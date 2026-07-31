@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Project setup, written down.
+#
+# Every command in here has already been run by hand. That is the point: the
+# script exists so the setup is reviewable and repeatable, not so it runs once.
+# Clicking through a console leaves no diff, no history and nothing to hand to
+# the next person — or to yourself, on the second project.
+#
+#     infra/setup.sh
+#
+# Idempotent. Every step checks before it acts, so a re-run prints ticks and
+# changes nothing. Safe against a half-configured project, which is the normal
+# case here.
+#
+# Terraform is the later upgrade. A shell script that mirrors the commands you
+# actually typed is the honest first version.
+# =============================================================================
+set -euo pipefail
+
+PROJECT="${PROJECT:-poc-bert-mlops-460289b}"
+REGION="${REGION:-me-west1}"
+REPO="${REPO:-poc-bert}"
+SA_NAME="${SA_NAME:-sentiment-run}"
+
+SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+POLICY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cleanup-policy.json"
+
+# run: serves the container. artifactregistry: stores it. logging: the service
+# writes there. iam: needed to create the service account below.
+REQUIRED_APIS=(
+  run.googleapis.com
+  artifactregistry.googleapis.com
+  logging.googleapis.com
+  iam.googleapis.com
+)
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+add() { printf '  \033[33m+\033[0m %s\n' "$*"; }
+
+# -----------------------------------------------------------------------------
+# Retry anything that depends on an API having *become* usable.
+#
+# `gcloud services enable` returns as soon as the request is accepted. The
+# permission layer takes another 30-120s to agree. In between, calls fail with
+# IAM_PERMISSION_DENIED — which sends you reading about roles, where nothing is
+# wrong, because your account already holds owner.
+#
+# This was hit for real: creating the registry two seconds after enabling the
+# API failed exactly this way, and the identical command a minute later worked.
+# Never treat `enable` as meaning ready.
+# -----------------------------------------------------------------------------
+retry() {
+  local n=0 max=8 delay
+  until "$@"; do
+    n=$((n + 1))
+    if ((n >= max)); then
+      printf '  \033[31m✗\033[0m gave up after %d attempts: %s\n' "$max" "$*" >&2
+      return 1
+    fi
+    delay=$((n * 15))
+    printf '  … not ready yet (attempt %d/%d), retrying in %ds\n' "$n" "$max" "$delay"
+    sleep "$delay"
+  done
+}
+
+say "project ${PROJECT}, region ${REGION}"
+
+# --- APIs --------------------------------------------------------------------
+say "APIs"
+enabled="$(gcloud services list --enabled --project="${PROJECT}" --format='value(config.name)')"
+for api in "${REQUIRED_APIS[@]}"; do
+  if grep -qx "${api}" <<<"${enabled}"; then
+    ok "${api}"
+  else
+    add "${api}"
+    gcloud services enable "${api}" --project="${PROJECT}"
+  fi
+done
+
+# --- the registry ------------------------------------------------------------
+# Same region as the service. A cross-region pull works, but it costs egress and
+# adds seconds to a cold start — and cold start is the number this phase has to
+# defend.
+say "artifact registry"
+if gcloud artifacts repositories describe "${REPO}" \
+  --location="${REGION}" --project="${PROJECT}" >/dev/null 2>&1; then
+  ok "${REGION}/${REPO}"
+else
+  add "${REGION}/${REPO}"
+  retry gcloud artifacts repositories create "${REPO}" \
+    --repository-format=docker \
+    --location="${REGION}" \
+    --project="${PROJECT}" \
+    --description="Sentiment service images, tagged by git SHA"
+fi
+
+# Storage is what breaks the *next* deploy. The free tier is 0.5GB and one image
+# is ~615MB compressed, so the second image already exceeds it. Keep the five
+# most recent versions; delete anything else older than 30 days.
+say "cleanup policy"
+gcloud artifacts repositories set-cleanup-policies "${REPO}" \
+  --location="${REGION}" \
+  --project="${PROJECT}" \
+  --policy="${POLICY}" \
+  --no-dry-run >/dev/null
+ok "keep last 5, delete >30d  (${POLICY##*/})"
+
+# Lets `docker push` authenticate to this registry as you. Rewrites
+# ~/.docker/config.json; harmless to repeat.
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet 2>/dev/null
+ok "docker credentials for ${REGION}-docker.pkg.dev"
+
+# --- the runtime identity ----------------------------------------------------
+# The service runs as this account, NOT the default compute service account.
+#
+# That default holds roles/editor: it can delete buckets, create VMs and read
+# every secret in the project. A public inference endpoint has no business
+# holding any of that, and "the code never calls those APIs" is a hope, not a
+# control. This account gets logWriter and nothing else, because the container
+# genuinely needs nothing else — the weights are baked into the image, so it
+# reaches for no Google API at request time.
+#
+# Same argument as `USER app` in the Dockerfile, one layer further out.
+say "runtime service account"
+if gcloud iam service-accounts describe "${SA_EMAIL}" --project="${PROJECT}" >/dev/null 2>&1; then
+  ok "${SA_EMAIL}"
+else
+  add "${SA_EMAIL}"
+  retry gcloud iam service-accounts create "${SA_NAME}" \
+    --project="${PROJECT}" \
+    --display-name="Sentiment service (Cloud Run runtime)" \
+    --description="Runs the sentiment container. Least privilege: logs only."
+
+  # The same propagation problem, one layer down: `create` returns before the
+  # account is visible to the IAM policy API, and binding a role to it fails
+  # with "Service account does not exist" — which reads like the create silently
+  # failed. It didn't. Wait for it to be readable before binding.
+  retry gcloud iam service-accounts describe "${SA_EMAIL}" \
+    --project="${PROJECT}" >/dev/null 2>&1
+fi
+
+# Without logWriter the service still serves traffic — it just goes silent, and
+# a silent service in production is its own kind of outage.
+if gcloud projects get-iam-policy "${PROJECT}" \
+  --flatten="bindings[].members" \
+  --filter="bindings.role=roles/logging.logWriter AND bindings.members:${SA_EMAIL}" \
+  --format='value(bindings.role)' 2>/dev/null | grep -q logWriter; then
+  ok "roles/logging.logWriter"
+else
+  add "roles/logging.logWriter"
+  retry gcloud projects add-iam-policy-binding "${PROJECT}" \
+    --member="serviceAccount:${SA_EMAIL}" \
+    --role="roles/logging.logWriter" \
+    --condition=None >/dev/null
+fi
+
+say "done — next: make push && make deploy"

@@ -48,6 +48,7 @@ def fake() -> Iterator[FakeModel]:
     """
     stub = FakeModel()
     main.app.dependency_overrides[main.get_model] = lambda: stub
+    main.app.dependency_overrides[main.get_model_if_loaded] = lambda: stub
     yield stub
     main.app.dependency_overrides.clear()
 
@@ -156,4 +157,38 @@ def test_unknown_route_is_404(client):
 
 def test_openapi_schema_is_served(client):
     """The contract is machine-readable, so consumers can generate clients."""
-    assert "/predict" in client.get("/openapi.json").json()["paths"]
+    served = client.get("/openapi.json").json()["paths"]
+    assert "/predict" in served
+    assert "/readyz" in served, "run_eval polls /readyz; deleting it breaks the harness"
+
+
+# --------------------------------------------------------------------------
+# Liveness and readiness
+#
+# Two endpoints because an orchestrator acts differently on each: liveness
+# failing means restart me, readiness failing means do not route to me yet.
+# --------------------------------------------------------------------------
+
+
+def test_healthz_is_ok(client):
+    assert client.get("/healthz").json() == {"status": "ok"}
+
+
+def test_readyz_reports_the_loaded_model(client):
+    """Ready, and carrying the provenance run_eval attributes its report with."""
+    body = client.get("/readyz").json()
+    assert body == {"ready": True, "model_version": "fake:test@0000", "runtime": "fake"}
+
+
+def test_readyz_is_503_when_no_model_is_loaded(client):
+    """The whole point of a readiness endpoint: say no, and say why.
+
+    Unreachable in the real container — lifespan loads the weights before
+    uvicorn binds the port, so a failed load kills the process instead of
+    serving this. Asserted anyway, because the day that stops being true is
+    exactly the day this response matters.
+    """
+    main.app.dependency_overrides[main.get_model_if_loaded] = lambda: None
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"ready": False, "reason": "model not loaded"}

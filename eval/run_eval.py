@@ -51,22 +51,23 @@ def load_golden(path: Path) -> list[dict]:
 
 
 def wait_for_ready(client: httpx.Client, timeout: float) -> dict:
-    """Block until the service can actually answer, and return its first answer.
+    """Block until the service reports it can serve, and return what it said.
 
-    Deliberately probes ``/predict`` rather than a dedicated readiness endpoint.
-    What we are waiting for is the process to finish starting — it loads its
-    weights before it accepts traffic — and a successful prediction proves the
-    model is loaded *and* inference works end to end, which is a stronger signal
-    than any health check that only reports the process is alive.
+    Probes ``/readyz``, which answers 200 only once the weights are loaded. The
+    cheaper alternative would be a liveness check, which reports the process is
+    alive while it is still several seconds from being able to answer anything;
+    the more expensive one is a real prediction, which proves the same thing at
+    the cost of a forward pass and conflates "not ready yet" with "inference is
+    broken".
 
-    The response also carries ``model_version`` and ``runtime``, which is where
-    the report's provenance comes from.
+    The response carries ``model_version`` and ``runtime``, which is where the
+    report's provenance comes from.
     """
     deadline = time.monotonic() + timeout
     last = "no response"
     while time.monotonic() < deadline:
         try:
-            r = client.post("/predict", json={"texts": ["ready?"]}, timeout=60.0)
+            r = client.get("/readyz", timeout=60.0)
             if r.status_code == 200:
                 return r.json()
             last = f"HTTP {r.status_code}: {r.text[:200]}"

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "keep-recent-five",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": { "keepCount": 5 }
+  },
+  {
+    "name": "delete-anything-older",
+    "action": { "type": "Delete" },
+    "condition": { "olderThan": "30d" }
+  }
+]
