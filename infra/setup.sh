@@ -156,4 +156,98 @@ else
     --condition=None >/dev/null
 fi
 
+# --- keyless CI auth ---------------------------------------------------------
+# The deploy identity, for GitHub Actions. Separate from the runtime identity
+# above and much more powerful, which is exactly why it must not be a key.
+#
+# The usual way to give CI access to GCP is to create a service-account JSON key
+# and paste it into a secret. That key is a bearer credential with no expiry: it
+# works from anywhere, forever, for anyone who reads it. Leaked SA keys are the
+# most common serious GCP credential incident.
+#
+# Workload Identity Federation replaces it with nothing. GitHub already signs an
+# OIDC token describing the workflow; GCP is configured to trust that issuer and
+# exchange the token for a short-lived access token. There is no key to leak,
+# because no key exists.
+#
+# The attribute condition is the part people skip. Without it, the pool trusts
+# *any* GitHub repository — anyone's workflow could ask for a token and get one.
+# The binding below restricts it to your repo alone.
+#
+# Skipped until GITHUB_REPO is set, since the binding names the repo and the
+# repo is created at the start of Phase 4.
+if [[ -z "${GITHUB_REPO:-}" ]]; then
+  say "keyless CI auth — skipped"
+  printf '  Set GITHUB_REPO=owner/name to configure it. Phase 4 creates the repo.\n'
+else
+  say "keyless CI auth for ${GITHUB_REPO}"
+
+  DEPLOYER="deployer@${PROJECT}.iam.gserviceaccount.com"
+  POOL="${POOL:-github}"
+  PROVIDER="${PROVIDER:-github-oidc}"
+
+  if gcloud iam service-accounts describe "${DEPLOYER}" --project="${PROJECT}" >/dev/null 2>&1; then
+    ok "${DEPLOYER}"
+  else
+    add "${DEPLOYER}"
+    retry gcloud iam service-accounts create deployer \
+      --project="${PROJECT}" \
+      --display-name="CI deployer (GitHub Actions via WIF)"
+    retry gcloud iam service-accounts describe "${DEPLOYER}" --project="${PROJECT}" >/dev/null 2>&1
+  fi
+
+  # Exactly what a deploy needs and nothing else: update the service, push an
+  # image, and act as the runtime account. Not roles/editor, not roles/owner.
+  for role in roles/run.developer roles/artifactregistry.writer roles/iam.serviceAccountUser; do
+    if gcloud projects get-iam-policy "${PROJECT}" \
+      --flatten="bindings[].members" \
+      --filter="bindings.role=${role} AND bindings.members:${DEPLOYER}" \
+      --format='value(bindings.role)' 2>/dev/null | grep -q .; then
+      ok "${role}"
+    else
+      add "${role}"
+      retry gcloud projects add-iam-policy-binding "${PROJECT}" \
+        --member="serviceAccount:${DEPLOYER}" \
+        --role="${role}" --condition=None >/dev/null
+    fi
+  done
+
+  if gcloud iam workload-identity-pools describe "${POOL}" \
+    --project="${PROJECT}" --location=global >/dev/null 2>&1; then
+    ok "pool ${POOL}"
+  else
+    add "pool ${POOL}"
+    retry gcloud iam workload-identity-pools create "${POOL}" \
+      --project="${PROJECT}" --location=global --display-name="GitHub Actions"
+  fi
+
+  if gcloud iam workload-identity-pools providers describe "${PROVIDER}" \
+    --project="${PROJECT}" --location=global --workload-identity-pool="${POOL}" >/dev/null 2>&1; then
+    ok "provider ${PROVIDER}"
+  else
+    add "provider ${PROVIDER}"
+    retry gcloud iam workload-identity-pools providers create-oidc "${PROVIDER}" \
+      --project="${PROJECT}" --location=global \
+      --workload-identity-pool="${POOL}" \
+      --issuer-uri="https://token.actions.githubusercontent.com" \
+      --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+      --attribute-condition="assertion.repository == '${GITHUB_REPO}'"
+  fi
+
+  # Only this repository may impersonate the deployer.
+  PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectNumber)')"
+  PRINCIPAL="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/attribute.repository/${GITHUB_REPO}"
+
+  retry gcloud iam service-accounts add-iam-policy-binding "${DEPLOYER}" \
+    --project="${PROJECT}" \
+    --member="${PRINCIPAL}" \
+    --role="roles/iam.workloadIdentityUser" >/dev/null
+  ok "only ${GITHUB_REPO} may impersonate ${DEPLOYER}"
+
+  printf '\n  For cd.yml:\n'
+  printf '    workload_identity_provider: projects/%s/locations/global/workloadIdentityPools/%s/providers/%s\n' \
+    "${PROJECT_NUMBER}" "${POOL}" "${PROVIDER}"
+  printf '    service_account: %s\n' "${DEPLOYER}"
+fi
+
 say "done — next: make push && make deploy"

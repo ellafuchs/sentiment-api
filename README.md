@@ -103,6 +103,63 @@ Recorded numbers are in [docs/architecture.md](docs/architecture.md).
 
 ---
 
+## Put it on the internet
+
+It already is:
+
+```bash
+curl -sS -X POST https://sentiment-y3vui2lbqq-zf.a.run.app/predict -H 'content-type: application/json' -d '{"texts":["the ending ruined it for me"]}'
+```
+
+```
+{"predictions":[{"label":"NEGATIVE","score":0.9998}],"model_version":"hf:distilbert-...@714eb0fa89d2","runtime":"pytorch"}
+```
+
+That is the same container from `make build`, running in Google's Tel Aviv region, scaled to zero
+when nobody is asking. It costs nothing while idle.
+
+To deploy your own copy:
+
+```bash
+bash infra/setup.sh
+```
+
+Creates the project's registry, a cleanup policy, and a service account that can write logs and
+nothing else. Idempotent — run it as often as you like.
+
+```bash
+make push
+```
+
+```bash
+make deploy
+```
+
+`push` builds for `linux/amd64` (Cloud Run refuses the arm64 image your laptop builds by default) and
+tags it with the current git SHA. `deploy` looks that tag up, resolves it to a **digest**, and
+deploys the digest — so the question "which image is this revision running?" has exactly one answer.
+It refuses to run on a dirty working tree, because a live revision that maps to no commit cannot be
+reproduced.
+
+Then grade the deployed service with the same harness that graded your laptop:
+
+```bash
+make score URL=$(make -s url)
+```
+
+```
+  accuracy       0.9000
+  macro F1       0.8997
+  p95 latency    156.6 ms
+
+✅ Gate passed
+```
+
+**Identical accuracy on all three** — laptop, container, cloud. Same weights, same tokenizer, same
+answers. That is what baking the model into the image buys you.
+
+---
+
 ## The files
 
 | File | What it does | When it runs |
@@ -178,21 +235,31 @@ make help
 | `make build` | Build the container image |
 | `make test-container` | Test the built image over HTTP |
 | `make run-container` | Serve from the image, like the cloud will |
+| `make push` | Build for amd64 and push it, tagged with the git SHA |
+| `make deploy` | Deploy that image to Cloud Run, pinned by digest |
+| `make url` | Print the live service address |
+| `make score URL=…` | Grade whatever is listening at that address |
 
 ---
 
 ## Where things stand
 
-- [x] The service runs on your laptop
-- [x] 200 test sentences and a pass/fail gate
-- [x] Package it into a container
-- [ ] Put it on Google Cloud so it has a real web address
-- [ ] Make changing the model deploy itself automatically
-- [ ] Make it refuse to deploy a worse model
-- [ ] Make it faster with a different inference engine
-- [ ] Train your own model and run it through the same checks
+| | | Phase |
+|---|---|---|
+| [x] | The service runs on your laptop | 0 |
+| [x] | 200 test sentences and a pass/fail gate | 1 |
+| [x] | Package it into a container | 2 |
+| [x] | **Put it on Google Cloud so it has a real web address** | **3** |
+| [ ] | Make changing the model deploy itself automatically | 4 |
+| [ ] | Make it refuse to deploy a worse model | 5 |
+| [ ] | Make it faster with a different inference engine | 7 |
+| [ ] | Train your own model and run it through the same checks | 8 |
 
-Everything so far runs entirely on your machine. Nothing is on the internet yet.
+The phase numbers are the ones used in commits and `docs/`. They skip around because two phases
+(0.5, 1.5) were corrections that never got a box here, and phase 6 — proving the gate *blocks* — is
+a demonstration rather than a feature.
+
+**It is on the internet.** The next phase is making a merge deploy it for you.
 
 ---
 

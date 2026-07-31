@@ -1,4 +1,4 @@
-# Baseline — Phase 2
+# Baseline — Phase 2 (container)
 
 The "before" numbers. Phase 7 claims ONNX Runtime is roughly 2–3× faster and 4× smaller; that
 claim is unfalsifiable without these, measured the same way.
@@ -98,3 +98,89 @@ then, in another terminal:
 ```bash
 make score
 ```
+
+---
+
+# Phase 3 — on Cloud Run
+
+Recorded 2026-07-31 against revision `sentiment-00001-pkc` in `me-west1`, image `sha256:d0f6590c`
+built from `eb76720`, 2 vCPU / 2 GiB, concurrency 8, `min-instances 0`, served publicly at
+`https://sentiment-y3vui2lbqq-zf.a.run.app`.
+
+## The numbers
+
+| | Value | How |
+|---|---|---|
+| Accuracy | **0.9000** | `make score URL=…` — the same harness, pointed at HTTPS |
+| Macro F1 | **0.8997** | " |
+| p50 latency | **75.9 ms** | " |
+| p95 latency | **156.6 ms** | " |
+| Model load | **16.55 s** | `Started server process` → `Application startup complete`, from the logs |
+| Startup probe | **1 attempt** | `Default STARTUP TCP probe succeeded after 1 attempt` |
+
+Gate verdict: **passed**, p95 at 156.6 ms against a 300 ms ceiling.
+
+## Accuracy did not move, and that is the whole point
+
+| | Bare metal | Container | Cloud Run |
+|---|---|---|---|
+| Accuracy | 0.9000 | 0.9000 | **0.9000** |
+| Macro F1 | 0.8997 | 0.8997 | **0.8997** |
+
+Three machines and two processor architectures — an Apple Silicon laptop, a Linux VM under Docker
+Desktop, an amd64 Cloud Run instance in Tel Aviv — and not one of the 200 predictions differs.
+Weights baked in at build time, a digest-pinned image, and a config naming a 40-character commit are
+what buy that.
+
+## The latency numbers are not comparable
+
+The Phase 2 section above recorded p95 46.2 ms and argued it was inflated by Docker Desktop's
+virtualised network rather than being a Cloud Run prediction. It said: re-measure there.
+
+Re-measured: **156.6 ms**. That neither confirms nor refutes the claim, because this number was taken
+**from a laptop in Israel over the public internet** and carries real network RTT that neither
+earlier figure had. Bare metal timed a loopback socket; the container timed a VM boundary; this times
+the internet. Three different quantities wearing the same unit.
+
+Settling it needs a client inside `me-west1`. Until someone runs that, only the accuracy row is
+comparable across environments — and it is the row that matters.
+
+## Cold start, partially measured
+
+**16.55 s is the model-load portion only** — process start to `Application startup complete`. A true
+scale-to-zero cold start also includes pulling 615 MB of image, which happens before the first log
+line exists to timestamp it. Measuring the whole thing means idling the service ~15 minutes and
+timing the next request. Not done.
+
+`--cpu-boost` is on, which is why 268 MB of weights load in 16 s on an instance billed at 2 vCPU.
+
+## The default startup probe turns out to be the right one
+
+Cloud Run's default startup probe is TCP — it waits for something to hold port 8080. The logs show
+why that is sufficient here:
+
+```
+17:36:38.069  Started server process [1]
+17:36:38.069  Waiting for application startup.
+17:36:54.621  Application startup complete.
+17:36:54.636  Uvicorn running on http://0.0.0.0:8080
+17:36:54.636  Default STARTUP TCP probe succeeded after 1 attempt
+```
+
+Uvicorn binds the port **15 ms after** `lifespan` finishes loading the model, not before. So the port
+opening already means "weights are in memory", and an instance still loading is invisible to the load
+balancer rather than serving errors into a canary. An HTTP probe against `/readyz` would have needed
+a YAML deploy path and bought nothing.
+
+`/readyz` still earns its place: it is what `run_eval.wait_for_ready` polls, it carries the
+`model_version` every report is attributed with, and it proves the model is loaded without paying for
+a forward pass to find out.
+
+## Cost
+
+Scales to zero, so an idle service bills nothing. The Artifact Registry cleanup policy keeps the last
+5 images — the free tier is 0.5 GB and one image is 615 MB, so storage is what breaks the *next*
+deploy, not this one. A few cents a month against $300 of trial credit.
+
+The service runs as `sentiment-run`, holding `roles/logging.logWriter` and nothing else — not the
+default compute account, which carries Editor.
