@@ -520,3 +520,26 @@ service is public.
 
 That is the same argument as the runtime account holding only `logging.logWriter`, and as CI being
 unable to call `setIamPolicy`, one layer further out.
+
+## Branch protection is off, on purpose
+
+"An unenforced gate is a suggestion" is a fair objection and it is accepted. `main` takes direct
+pushes; nothing mechanically blocks a merge with a red gate.
+
+The reasoning, recorded so it reads as a decision rather than an oversight: one person pushes to this
+repository. Enforcement would turn every one-line fix into a pull request and a six-minute wait, to
+protect the author from themselves. The gate still runs, still comments, and still fails — only the
+block on merging is absent.
+
+That trade stops making sense the moment a second person can push, and it is one command to reverse:
+
+```bash
+gh api repos/ellafuchs/sentiment-api/branches/main/protection -X PUT \
+  -F required_status_checks[strict]=true \
+  -f 'required_status_checks[contexts][]=gate' \
+  -f 'required_status_checks[contexts][]=lint and tests' \
+  -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null
+```
+
+Phase 6 does not depend on it. Proving the gate *blocks* means showing a red verdict on a bad model
+and a live revision that never changed — neither of which needs GitHub to refuse the merge.

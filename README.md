@@ -231,6 +231,11 @@ curl -s https://sentiment-y3vui2lbqq-zf.a.run.app/metadata
 If production can't be reached, the comment says so **in bold** rather than quietly checking less.
 "No baseline" and "beat the baseline" both produce a green tick, and they are not the same thing.
 
+**The gate reports; it doesn't block.** `main` still takes direct pushes — no pull request required
+for a one-line fix. That's a deliberate choice for a one-person project, written down in
+[docs/architecture.md](docs/architecture.md) along with the single command that turns enforcement on
+if someone else ever pushes here.
+
 ---
 
 ## The files
