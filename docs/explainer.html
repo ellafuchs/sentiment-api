@@ -1,0 +1,602 @@
+<title>Sentiment API — a deployment pipeline for a model that can be wrong quietly</title>
+
+<style>
+  :root {
+    --ground: #F3F5F8;
+    --raised: #FFFFFF;
+    --ink: #141B24;
+    --muted: #5A6674;
+    --rule: #D3DAE3;
+    --rule-soft: #E4E9EF;
+    --accent: #1F47C7;
+    --accent-soft: #E7ECFA;
+    --pass: #146C43;
+    --pass-soft: #E1F2E9;
+    --fail: #AE2B21;
+    --fail-soft: #FBE7E5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0F141A;
+      --raised: #161D26;
+      --ink: #E4EAF1;
+      --muted: #8A97A6;
+      --rule: #2A343F;
+      --rule-soft: #202932;
+      --accent: #6B92FF;
+      --accent-soft: #17233D;
+      --pass: #39C57F;
+      --pass-soft: #12291F;
+      --fail: #FF7264;
+      --fail-soft: #2C1815;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --ground: #F3F5F8;
+    --raised: #FFFFFF;
+    --ink: #141B24;
+    --muted: #5A6674;
+    --rule: #D3DAE3;
+    --rule-soft: #E4E9EF;
+    --accent: #1F47C7;
+    --accent-soft: #E7ECFA;
+    --pass: #146C43;
+    --pass-soft: #E1F2E9;
+    --fail: #AE2B21;
+    --fail-soft: #FBE7E5;
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0F141A;
+    --raised: #161D26;
+    --ink: #E4EAF1;
+    --muted: #8A97A6;
+    --rule: #2A343F;
+    --rule-soft: #202932;
+    --accent: #6B92FF;
+    --accent-soft: #17233D;
+    --pass: #39C57F;
+    --pass-soft: #12291F;
+    --fail: #FF7264;
+    --fail-soft: #2C1815;
+  }
+
+  :root {
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color-scheme: light dark;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 50rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 6vw, 5rem) clamp(1.1rem, 4vw, 2rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(3rem, 7vw, 4.75rem);
+  }
+
+  /* ---- type ---- */
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.85rem, 5.4vw, 3rem);
+    line-height: 1.06;
+    letter-spacing: -0.035em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: clamp(1.28rem, 3.4vw, 1.7rem);
+    line-height: 1.18;
+    letter-spacing: -0.025em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: 1.02rem;
+    letter-spacing: -0.012em;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  p { margin: 0; max-width: 65ch; }
+  strong { font-weight: 650; }
+
+  .lede {
+    font-size: clamp(1.06rem, 2.4vw, 1.22rem);
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 34ch;
+  }
+
+  .muted { color: var(--muted); }
+
+  .stack { display: flex; flex-direction: column; gap: 1.1rem; }
+  .stack-tight { display: flex; flex-direction: column; gap: 0.6rem; }
+  section { display: flex; flex-direction: column; gap: 1.4rem; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--rule-soft);
+    padding: 0.1em 0.36em;
+    border-radius: 2px;
+  }
+
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  /* ---- hero ---- */
+
+  .hero { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .hero-meta {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.1rem;
+  }
+  .hero-meta b { color: var(--ink); font-weight: 600; }
+
+  /* ---- the quote / claim block ---- */
+
+  .claim {
+    border-left: 2px solid var(--accent);
+    padding: 0.15rem 0 0.15rem 1.25rem;
+    font-size: clamp(1.02rem, 2.3vw, 1.16rem);
+    line-height: 1.5;
+    max-width: 52ch;
+  }
+
+  /* ---- data readout ---- */
+
+  .readout {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.82rem;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .readout-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    padding: 0.62rem 0;
+    align-items: baseline;
+  }
+  .readout-row + .readout-row { border-top: 1px solid var(--rule-soft); }
+  .readout-row dt { color: var(--muted); }
+  .readout-row dd { margin: 0; font-weight: 600; text-align: right; }
+  .readout-row dd small {
+    display: block;
+    font-weight: 400;
+    color: var(--muted);
+    font-size: 0.86em;
+  }
+
+  /* ---- pipeline strip ---- */
+
+  .pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.01em;
+  }
+  .stage {
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    padding: 0.5rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    flex: 1 1 7.5rem;
+  }
+  .stage b { font-weight: 600; }
+  .stage span { color: var(--muted); font-size: 0.92em; }
+  .stage.terminal { border-color: var(--accent); }
+  .stage.terminal b { color: var(--accent); }
+
+  /* ---- gate table ---- */
+
+  .gate {
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    overflow-x: auto;
+  }
+  .gate-head {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--pass);
+    background: var(--pass-soft);
+  }
+  .gate-head.is-fail { color: var(--fail); background: var(--fail-soft); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.79rem;
+    white-space: nowrap;
+  }
+  th, td { padding: 0.5rem 0.9rem; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-weight: 500;
+    color: var(--muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr + tr td { border-top: 1px solid var(--rule-soft); }
+  td.ok { color: var(--pass); }
+  td.no { color: var(--fail); }
+  tr.highlight td { background: var(--accent-soft); }
+
+  /* ---- the measured-from comparison ---- */
+
+  .measure {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .measure-col {
+    background: var(--raised);
+    padding: 1.1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+  .measure-where {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .bars { display: flex; flex-direction: column; gap: 0.55rem; }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 5.4rem 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-row .who { color: var(--muted); }
+  .bar-track { height: 8px; background: var(--rule-soft); position: relative; }
+  .bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+  .bar-fill.base { background: var(--muted); }
+  .measure-ratio {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--rule-soft);
+    color: var(--ink);
+  }
+  .measure-ratio b { color: var(--accent); }
+
+  /* ---- story ---- */
+
+  .story {
+    display: flex;
+    flex-direction: column;
+    gap: 0.95rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+  }
+  .story-n {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  /* ---- terminal block ---- */
+
+  .term {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    line-height: 1.65;
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    white-space: pre;
+    font-variant-numeric: tabular-nums;
+  }
+  .term .dim { color: var(--muted); }
+  .term .hi { color: var(--accent); font-weight: 600; }
+  .term .bad { color: var(--fail); font-weight: 600; }
+  .term .good { color: var(--pass); font-weight: 600; }
+
+  /* ---- phases ---- */
+
+  .phases { display: flex; flex-direction: column; }
+  .phase {
+    display: grid;
+    grid-template-columns: 2.5rem 1fr auto;
+    gap: 0.5rem 1rem;
+    padding: 0.6rem 0;
+    border-top: 1px solid var(--rule-soft);
+    font-size: 0.94rem;
+    align-items: baseline;
+  }
+  .phase:first-child { border-top: 1px solid var(--rule); }
+  .phase-n {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .phase-state {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .phase.done .phase-state { color: var(--pass); }
+  .phase.next { background: var(--accent-soft); margin-inline: -0.7rem; padding-inline: 0.7rem; }
+  .phase.next .phase-n,
+  .phase.next .phase-state { color: var(--accent); }
+  .phase.next .phase-name { font-weight: 600; }
+  .phase-note {
+    grid-column: 2 / -1;
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: 58ch;
+  }
+
+  /* ---- gaps ---- */
+
+  .gaps { display: flex; flex-direction: column; }
+  .gap-row {
+    display: grid;
+    grid-template-columns: minmax(9rem, 14rem) 1fr;
+    gap: 0.3rem 1.4rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--rule-soft);
+    font-size: 0.9rem;
+  }
+  .gap-row:first-child { border-top: 1px solid var(--rule); }
+  .gap-row dt { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; }
+  .gap-row dd { margin: 0; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.3rem;
+    font-family: var(--mono);
+    font-size: 0.73rem;
+    color: var(--muted);
+    line-height: 1.75;
+  }
+
+  @media (max-width: 32rem) {
+    .bar-row { grid-template-columns: 4.6rem 1fr auto; }
+    .gap-row { grid-template-columns: 1fr; }
+    .phase { grid-template-columns: 2.2rem 1fr; }
+    .phase-state { grid-column: 2; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .bar-fill { transition: width 0.4s ease; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="hero">
+    <div class="eyebrow">Sentiment API · MLOps pipeline</div>
+    <h1>A model that is wrong<br>and says 200 OK</h1>
+    <p class="lede">A sentiment analysis service. The model isn't the point — everything around it is.</p>
+    <div class="hero-meta">
+      <span>live <b>sentiment-y3vui2lbqq-zf.a.run.app</b></span>
+      <span>accuracy <b>0.9000</b></span>
+      <span>rollback <b>22s</b></span>
+      <span>phases <b>6 of 9</b></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="eyebrow">Why it exists</div>
+    <p class="claim">When a normal service breaks, it throws an error. When a model breaks, it returns <code>200 OK</code> with 99% confidence and is simply wrong.</p>
+    <p>Nothing to alert on. Nothing in the logs. No stack trace, no 500, no latency spike. The only thing that catches it is a test that already knows the right answer.</p>
+    <p>So the project is built around one idea: <strong>which model runs is a line in a config file, and changing that line is tested, gated, and reversible.</strong></p>
+
+    <div class="stack-tight">
+      <h3>The example left in on purpose</h3>
+      <div class="term">"I would not recommend this to a friend."
+
+  → <span class="bad">POSITIVE</span>  <span class="dim">0.99</span></div>
+      <p class="muted">That's wrong, and the failing test is still in the suite. Deleting the test to get a green tick would hide a real weakness — which is exactly the failure mode the whole pipeline exists to catch.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">What happens on deploy</div>
+    <div class="pipeline">
+      <div class="stage"><b>build</b><span>image + weights</span></div>
+      <div class="stage"><b>deploy 0%</b><span>real hardware, no users</span></div>
+      <div class="stage"><b>smoke</b><span>test the deployed URL</span></div>
+      <div class="stage"><b>canary 10%</b><span>60s, watched</span></div>
+      <div class="stage terminal"><b>100%</b><span>~7 min total</span></div>
+    </div>
+    <p>Any step can say no. A bad version caught at <em>smoke</em> was seen by nobody. Caught at <em>canary</em>, by a tenth of callers for sixty seconds — and traffic returns automatically.</p>
+    <p>The old version stays built and configured the whole time. That's why going back is a traffic switch, not a rebuild.</p>
+
+    <dl class="readout">
+      <div class="readout-row"><dt>Accuracy — laptop, container, cloud</dt><dd>0.9000<small>identical on all three</small></dd></div>
+      <div class="readout-row"><dt>Macro F1</dt><dd>0.8997</dd></div>
+      <div class="readout-row"><dt>Rollback, target cold</dt><dd>22 s</dd></div>
+      <div class="readout-row"><dt>Rollback, target warm</dt><dd>4 s</dd></div>
+      <div class="readout-row"><dt>Tests</dt><dd>124 + 22<small>unit &amp; contract · against the image</small></dd></div>
+      <div class="readout-row"><dt>Credentials stored for deploys</dt><dd>none<small>OIDC, expires in an hour</small></dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <div class="eyebrow">Three things that went wrong</div>
+    <p>These are the parts worth telling. Each was invisible to a green test suite.</p>
+
+    <article class="story">
+      <div class="story-n">01 · the endpoint that never worked</div>
+      <h2>119 tests passed. It was unreachable.</h2>
+      <p>A <code>/healthz</code> health check. Every unit test passed, every container test passed. Then one test talked to the <em>actually deployed</em> service and got a 404.</p>
+      <p>Google's edge intercepts that exact path on Cloud Run — the request never reaches the container at all. The giveaway was in the headers:</p>
+      <div class="term"><span class="dim">/readyz       200   server: Google Frontend   x-cloud-trace-context: 3a6c…</span>
+<span class="dim">/nonexistent  404   server: Google Frontend   x-cloud-trace-context: 90a9…</span>
+/healthz      <span class="bad">404</span>   <span class="bad">(no server header, no trace id)</span></div>
+      <p>A path that doesn't exist gets a proper 404 <em>from the app</em>. <code>/healthz</code> never arrives. Renamed to <code>/livez</code>, with a test pinning <code>/healthz</code> at 404 — because the instinct on reading <code>/livez</code> is to "correct" it back.</p>
+    </article>
+
+    <article class="story">
+      <div class="story-n">02 · the canary that measured the atlantic</div>
+      <h2>It rolled back a healthy version</h2>
+      <p>The canary compared latency to a 300 ms limit and refused the deploy at 337 ms. The version was fine — probed directly minutes later it answered in 125 ms, ten times out of ten.</p>
+      <p>The limit was measured on a laptop in Israel. The canary ran on a GitHub server in the United States. Most of that 337 ms was the ocean.</p>
+
+      <div class="measure">
+        <div class="measure-col">
+          <div class="measure-where">measured from a laptop</div>
+          <div class="bars">
+            <div class="bar-row"><span class="who">candidate</span><span class="bar-track"><span class="bar-fill" style="width:37%"></span></span><span>144 ms</span></div>
+            <div class="bar-row"><span class="who">live now</span><span class="bar-track"><span class="bar-fill base" style="width:35%"></span></span><span>136 ms</span></div>
+          </div>
+          <div class="measure-ratio">difference <b>+6%</b></div>
+        </div>
+        <div class="measure-col">
+          <div class="measure-where">measured from CI</div>
+          <div class="bars">
+            <div class="bar-row"><span class="who">candidate</span><span class="bar-track"><span class="bar-fill" style="width:100%"></span></span><span>388 ms</span></div>
+            <div class="bar-row"><span class="who">live now</span><span class="bar-track"><span class="bar-fill base" style="width:86%"></span></span><span>334 ms</span></div>
+          </div>
+          <div class="measure-ratio">difference <b>+16%</b></div>
+        </div>
+      </div>
+
+      <p><strong>Same two versions, minutes apart.</strong> The absolute numbers move by 2.4×. The difference between them barely moves. Only one of those is a property of the software.</p>
+      <p>Look at the second column's lower bar: <strong>334 ms is the version already serving production</strong>, happily, for hours. The old check would have rejected a candidate for being indistinguishable from what was already live — while reporting the incumbent's own latency as a violation.</p>
+      <p>So the canary stopped using a fixed number. It now measures both versions from the same place at the same moment, and asks only whether the new one is worse. Distance and network cost sit in both numbers and cancel.</p>
+    </article>
+
+    <article class="story">
+      <div class="story-n">03 · why passing isn't enough</div>
+      <h2>0.885 clears the bar and is still a regression</h2>
+      <p>The minimum accuracy is 0.88. A model scoring <strong>0.885</strong> passes — while being worse than the <strong>0.900</strong> already serving users. Ship three of those and every individual change was "acceptable" and the model is now visibly worse. Nobody did anything wrong; the limit just never noticed.</p>
+      <p>So the deployed container carries its own report card, and every candidate is checked against what is <em>actually live</em>:</p>
+
+      <div class="gate">
+        <div class="gate-head">✓ Gate passed</div>
+        <table>
+          <thead>
+            <tr><th>check</th><th>value</th><th>threshold</th><th>margin</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>accuracy</td><td>0.9</td><td>min 0.88</td><td class="ok">+0.02</td></tr>
+            <tr><td>macro_f1</td><td>0.8997</td><td>min 0.87</td><td class="ok">+0.0298</td></tr>
+            <tr><td>p95_latency_ms</td><td>41.91</td><td>max 300</td><td class="ok">+258.1</td></tr>
+            <tr class="highlight"><td>accuracy vs live</td><td>0.9</td><td>min 0.88</td><td class="ok">+0.02</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="muted">That last row only appears when the live service answered. If production can't be reached the comment says so in bold, rather than quietly checking less — because "no baseline" and "beat the baseline" produce the same green tick and are not the same claim.</p>
+    </article>
+  </section>
+
+  <section>
+    <div class="eyebrow">Where it stands</div>
+    <div class="phases">
+      <div class="phase done"><span class="phase-n">0</span><span class="phase-name">Service on a laptop</span><span class="phase-state">done</span></div>
+      <div class="phase done"><span class="phase-n">1</span><span class="phase-name">Eval harness and gate</span><span class="phase-state">done</span></div>
+      <div class="phase done"><span class="phase-n">2</span><span class="phase-name">Containerize</span><span class="phase-state">done</span></div>
+      <div class="phase done"><span class="phase-n">3</span><span class="phase-name">Google Cloud, real URL</span><span class="phase-state">done</span></div>
+      <div class="phase done"><span class="phase-n">4</span><span class="phase-name">Deploy pipeline + rollback</span><span class="phase-state">done</span></div>
+      <div class="phase done"><span class="phase-n">5</span><span class="phase-name">The gate in CI</span><span class="phase-state">done</span></div>
+      <div class="phase next">
+        <span class="phase-n">6</span><span class="phase-name">Prove it blocks</span><span class="phase-state">next</span>
+        <p class="phase-note">Two pull requests. One swaps in a working model and ships. One swaps in a model whose classifier head was never trained — it should be refused. The proof isn't the red X; it's confirming the live version never moved.</p>
+      </div>
+      <div class="phase"><span class="phase-n">7</span><span class="phase-name">ONNX Runtime</span><span class="phase-state">planned</span>
+        <p class="phase-note">Swap the inference engine: image 1.5 GB → ~400 MB, faster. Success is a <em>negative</em> — no edits to the API, the tests, the eval harness or the gate. If any of those need touching, the abstraction was drawn in the wrong place.</p>
+      </div>
+      <div class="phase"><span class="phase-n">8</span><span class="phase-name">A fine-tuned model</span><span class="phase-state">planned</span>
+        <p class="phase-note">Training comes last on purpose. The pipeline is what makes "is my fine-tune actually better than the off-the-shelf one?" an answerable question rather than a guess.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Known gaps</div>
+    <p>Deliberate omissions, listed so they stay <em>known</em> omissions.</p>
+    <dl class="gaps">
+      <div class="gap-row"><dt>Drift monitoring</dt><dd>The biggest one. A green CI gate cannot see accuracy rotting <em>after</em> deploy, as real-world inputs drift away from the test set.</dd></div>
+      <div class="gap-row"><dt>Shadow deploys</dt><dd>A new model gets a copy of real traffic, logged not served, compared on real data before any canary.</dd></div>
+      <div class="gap-row"><dt>Model registry</dt><dd>MLflow or similar — artifacts, metrics, lineage, stage labels.</dd></div>
+      <div class="gap-row"><dt>Terraform</dt><dd>Infrastructure is a shell script that mirrors the commands actually typed. Honest, but not the real tool.</dd></div>
+      <div class="gap-row"><dt>Real traffic</dt><dd>No users, so the canary measures its own synthetic probes. The docs say so rather than claiming "validated in production".</dd></div>
+    </dl>
+    <p class="claim">The loop that <em>is</em> built — immutable artifacts tagged by commit, a gate before deploy, a canary, one-command rollback, model version as reviewable config — is the real production shape. What changes at a larger company is the number of tools plugged into each box, not the box diagram.</p>
+  </section>
+
+  <footer>
+    Live · <a href="https://sentiment-y3vui2lbqq-zf.a.run.app/metadata">sentiment-y3vui2lbqq-zf.a.run.app/metadata</a><br>
+    DistilBERT SST-2, pinned to a 40-character commit · Cloud Run, me-west1 · scales to zero<br>
+    Every figure on this page was measured, not estimated.
+  </footer>
+
+</div>
