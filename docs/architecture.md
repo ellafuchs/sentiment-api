@@ -276,9 +276,20 @@ runner speed and regional weather hit both samples equally and divide out:
   allowed    501 ms  (150% of baseline)
 ```
 
-**Those two blocks settle it.** Identical revisions, minutes apart. The absolute numbers move by
-2.4×; the ratio between them barely moves at all — 6% from the laptop, 16% from the runner. Only one
-of those quantities is a property of the software.
+And the merged version, run against real Cloud Run with the baseline timed before the split:
+
+```
+  baseline p95          245 ms   sentiment-00016-loq     ← timed at 100%, before any traffic moved
+  candidate p95         244 ms   sentiment-00019-wuj
+  public p95            234 ms   10%/90% mixture
+  allowed               367 ms   ceiling for this run
+  public requests        44 ok / 0 failed
+  candidate requests     44 ok / 0 failed
+```
+
+**Those blocks settle it.** Identical revisions, minutes apart. The absolute numbers move by 2.4×;
+the ratio between them barely moves at all — 6% from the laptop, 16% from the runner, and 0.4% in the
+run above. Only one of those quantities is a property of the software.
 
 And look at the baseline row from CI: **334 ms**, for the revision that had been serving production
 without complaint for hours. The original check would have failed a perfectly good deploy for being
@@ -325,6 +336,23 @@ down.
 Both revisions are now warmed before timing starts — uncounted, on a 90 s timeout — so the cold start
 is paid outside the measurement rather than recorded as an outage. Probes themselves get 30 s, above
 the cold start, so a slow request is recorded as *slow* instead of counted as *failed*.
+
+**Confirmed by measurement, not inference.** The first run of the rewritten script against real Cloud
+Run printed this:
+
+```
+warming up
+  previous      22094ms   (cold start paid here, not counted)
+  candidate      1708ms   (cold start paid here, not counted)
+```
+
+**22 seconds** for the idle previous revision's first request — worse than the 16.55 s the diagnosis
+was reasoned from, and more than twice the 10 s timeout that had been applied to it. Under the old
+script that single request is a failure, and one failure aborts a release. The candidate answered in
+1.7 s because `deploy.sh` had just probed its `/readyz`, so it still had an instance.
+
+That is the whole bug in four lines: the same request, on the same service, is a 22-second cold start
+or a 244 ms prediction depending only on whether something warmed it first.
 
 A failing baseline now aborts before any traffic moves. Measuring a candidate against a broken
 yardstick could otherwise roll back onto a revision worse than the one it rejected.
