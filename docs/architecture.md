@@ -205,7 +205,7 @@ Recorded 2026-07-31. `github.com/ellafuchs/sentiment-api` → push to `main` →
 
 Accuracy is the same 0.9000 / 0.8997 as bare metal, the container and Phase 3. Four environments now.
 
-## Three things this phase found
+## What this phase found
 
 Each was invisible to a green test suite, which is the argument for the phase existing.
 
@@ -285,12 +285,60 @@ without complaint for hours. The original check would have failed a perfectly go
 indistinguishable from the thing already live — while reporting the number that had been serving all
 along as a violation. A threshold that rejects the incumbent is not measuring the candidate.
 
-An absolute backstop of 3000 ms stays, because a ratio alone would happily promote a revision that
-is uniformly catastrophic on both sides. It means *broken*, not *far away*.
+An absolute backstop of 5000 ms stays, because a ratio alone would happily promote a revision that
+is uniformly catastrophic on both sides. It is a catastrophe backstop, not a performance target —
+`make score` still owns the real latency question, measured where the answer means something.
 
-The warmup is the other half. A revision at `min-instances 0` that has never taken traffic pays a
-cold start on its first request — image pull plus 16 s of model load — which is what produced the one
-timeout that failed the first canary. Five unmeasured requests first, then measure.
+The tolerance is `max(150% of baseline, baseline + 100 ms)`. **Both** must be exceeded before a
+rollback. A percentage alone punishes a fast baseline for noise: 80 ms → 130 ms is +62% and nobody
+can feel it.
+
+### 90% of the samples measured the wrong revision
+
+The first version probed only the public URL, where the split is 90/10 — so roughly 33 of those 37
+requests went to the **old** revision. Its latency was deciding the new one's fate.
+
+The window now probes both, counted separately, because they answer different questions. The public
+URL is the only thing that exercises the hostname, the split, and the load balancer choosing between
+two revisions; routing bugs live there and nowhere else. The candidate's tagged URL is where every
+sample is attributable to the revision under test.
+
+The baseline is now timed *before* any traffic moves, while the old revision still has 100%. Measured
+during the split it would have been contaminated by the candidate — and biased in the dangerous
+direction, since a slow candidate would inflate the very number it is judged against.
+
+Failures are counted per target, and the rollback message names which one failed and with what status
+code. The original `curl -fsS … >/dev/null 2>&1` could report *that* something failed but never
+*what*, leaving two revisions' logs to read through to find out whether it was a 503, a timeout or a
+DNS blip.
+
+### The timeout was below the cold start
+
+`--max-time 10`, against the **16.55 s** model load recorded in the Phase 3 section above, on
+revisions running `--min-instances 0`. The old revision had been idle, so its first request in the
+window *could not* have completed. That was the single failure — and one failure aborts a release.
+
+`tests/test_deploy.py` already used 60 s with a comment naming this exact cold start. `release.sh`
+was the outlier, in the same repository, contradicting a number this project had measured and written
+down.
+
+Both revisions are now warmed before timing starts — uncounted, on a 90 s timeout — so the cold start
+is paid outside the measurement rather than recorded as an outage. Probes themselves get 30 s, above
+the cold start, so a slow request is recorded as *slow* instead of counted as *failed*.
+
+A failing baseline now aborts before any traffic moves. Measuring a candidate against a broken
+yardstick could otherwise roll back onto a revision worse than the one it rejected.
+
+### The shape of all three
+
+**Every one of them compared quantities that were not the same quantity.** A ceiling from a different
+continent, a p95 from a different revision, a timeout from a warm service applied to a cold one.
+
+None were visible to any test, because all three are properties of *where and when* the measurement
+is taken — and no test suite takes a measurement anywhere but where it runs.
+
+The gate blocking a bad model is Phase 5. This was the gate blocking a good one, which costs less and
+teaches the same lesson: a threshold is only as meaningful as the thing it is compared against.
 
 ## What the split bought, on its first real failure
 

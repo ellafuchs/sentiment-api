@@ -127,11 +127,6 @@ jobs:
       # `always()` so a failed canary still reports which revision is serving —
       # which, after a rollback, is not the one this run built. That is exactly
       # the moment you want the summary to be accurate.
-      # Sources infra/lib.sh rather than re-asking "which revision is serving"
-      # in a fourth place. The first version of this step asked with --filter on
-      # `describe`, which gcloud rejects — and because the exit status of
-      # `cmd | head -1` is head's, the step reported success while producing an
-      # empty answer. A silently blank summary is worse than a failed one.
       - name: Summary
         if: always()
         env:
@@ -139,6 +134,14 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           SERVICE: ${{ vars.GCP_SERVICE }}
         run: |
+          # Through lib.sh, like every other caller. This was the fourth copy of
+          # that query and the one that outlived the fix: `describe` takes
+          # --flatten but rejects --filter, so the inlined version errored on
+          # every run — including the runs where this summary is the only place
+          # that says which revision a rollback left serving. And because the
+          # exit status of `cmd | head -1` is head's, it reported success while
+          # producing an empty answer. A silently blank summary is worse than a
+          # failed one.
           source infra/lib.sh
           SERVING="$(serving_revision)"
           URL="$(describe --format='value(status.url)')"
