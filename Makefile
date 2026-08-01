@@ -65,10 +65,18 @@ score: eval gate  ## eval + gate in one go (needs `make run` in another terminal
 
 IMAGE ?= poc-bert:dev
 
+# `--target runtime` explicitly: the last stage in the Dockerfile is `evaluated`,
+# which copies in eval_report.json — a file that does not exist until an image
+# has been built and scored. Building it by default would make `make build`
+# depend on the output of `make build`.
 .PHONY: build
 build:  ## Build the container image (first run downloads torch + weights, ~10 min)
-	docker build -t $(IMAGE) .
+	docker build --target runtime -t $(IMAGE) .
 	@docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}' $(IMAGE)
+
+.PHONY: evaluate
+evaluate:  ## Score the built image, then bake the report into it (/metadata)
+	IMAGE=$(IMAGE) infra/evaluate.sh
 
 .PHONY: test-container
 test-container:  ## Run the tests that drive the built image over HTTP
@@ -92,10 +100,18 @@ REMOTE  ?= $(REGION)-docker.pkg.dev/$(PROJECT)/$(REPO)/sentiment
 
 .PHONY: build-amd64
 build-amd64:  ## Build for Cloud Run's architecture (this laptop is arm64)
-	docker build --platform linux/amd64 -t $(REMOTE):$(GIT_SHA) .
+	docker build --platform linux/amd64 --target runtime -t $(REMOTE):$(GIT_SHA) .
+
+# Scores the amd64 image and layers the report in, so the revision that reaches
+# Cloud Run can answer /metadata. That answer is the baseline CI compares the
+# next candidate against — an unevaluated production image makes the regression
+# check skip silently.
+.PHONY: evaluate-amd64
+evaluate-amd64: build-amd64  ## Build amd64, score it, bake the report in
+	IMAGE=$(REMOTE):$(GIT_SHA) PLATFORM=linux/amd64 infra/evaluate.sh
 
 .PHONY: push
-push: build-amd64  ## Build amd64 and push it, tagged with the current git SHA
+push: evaluate-amd64  ## Build amd64, score it, and push it tagged with the git SHA
 	docker push $(REMOTE):$(GIT_SHA)
 
 # Deploying and releasing are separate on purpose — see infra/deploy.sh. The

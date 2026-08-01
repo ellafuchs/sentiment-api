@@ -4,8 +4,11 @@ One endpoint: POST /predict. Send texts, get labels back.
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -89,6 +92,58 @@ def readyz(
         response.status_code = 503
         return {"ready": False, "reason": "model not loaded"}
     return {"ready": True, "model_version": m.version, "runtime": m.runtime_name}
+
+
+def eval_report_path() -> Path:
+    """Where this build's own eval report lives.
+
+    Overridable so tests can point it somewhere real, and so a container can be
+    told a different path without a rebuild.
+    """
+    return Path(os.environ.get("EVAL_REPORT_PATH", "eval_report.json"))
+
+
+@app.get("/metadata")
+def metadata(response: Response) -> dict[str, object]:
+    """The scores this exact image earned, baked in at build time.
+
+    **The artifact reports its own quality.** The image is built, evaluated
+    while running, and then a thin final layer copies the resulting
+    ``eval_report.json`` into it. So "how good is the thing currently serving
+    production?" is a question you ask the thing currently serving production,
+    rather than one you answer from a spreadsheet, a wiki page, or the CI logs
+    of whichever run you think deployed it.
+
+    That matters because it is what makes the regression check possible. CI
+    fetches this from the live service and passes it to ``gate.py --baseline``,
+    so a candidate is judged not only against the absolute floors in
+    ``models.yaml`` but against what is actually deployed right now.
+
+    **Only ``accuracy`` is safe to compare across deployments, and the gate uses
+    only ``accuracy``.** The latency figures here were measured wherever this
+    image happened to be evaluated — a CI runner, on that day, over that
+    network. Comparing them to a candidate's latency measured somewhere else is
+    the mistake Phases 2, 3 and 4 each made in turn, and there is no reason to
+    make it a fourth time. They are recorded as provenance, not as a baseline.
+    See ``docs/architecture.md``.
+
+    404 when the report is absent, which is the honest answer for an image that
+    was never evaluated — a local ``make build``, or any build before this
+    phase existed. CI treats a 404 as "no baseline" and says so out loud rather
+    than silently skipping the check.
+    """
+    path = eval_report_path()
+    if not path.is_file():
+        response.status_code = 404
+        return {"evaluated": False, "reason": f"no eval report at {path}"}
+
+    try:
+        report = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        response.status_code = 500
+        return {"evaluated": False, "reason": f"unreadable eval report: {exc}"}
+
+    return {"evaluated": True, **report}
 
 
 @app.post("/predict", response_model=PredictResponse)

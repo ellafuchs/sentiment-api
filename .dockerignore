@@ -22,7 +22,11 @@ eval/
 examples/
 docs/
 infra/
-eval_report.json
+
+# eval_report.json is NOT excluded, and that is deliberate. The `evaluated`
+# stage copies it in so the image can serve its own scores at /metadata. It is
+# ~2KB, it is only read by that stage, and the `runtime` stage never touches it
+# — so a plain `make build` still produces an image without it.
 
 Dockerfile
 .dockerignore

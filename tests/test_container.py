@@ -193,8 +193,35 @@ def test_openapi_matches_what_the_eval_harness_needs(client: httpx.Client) -> No
     proves the *artifact* does — they can differ, if the wrong files are copied.
     """
     served = set(client.get("/openapi.json").json()["paths"])
-    needed = {"/predict", "/readyz"}
+    needed = {"/predict", "/readyz", "/metadata"}
     assert needed <= served, f"run_eval needs {sorted(needed)}; image serves {sorted(served)}"
+
+
+def test_metadata_reflects_whether_this_image_was_evaluated(client: httpx.Client) -> None:
+    """Either the image carries its own scores, or it says it does not.
+
+    Two legitimate answers, because two images are legitimate. ``make build``
+    produces the `runtime` stage and has no report — 404. ``make evaluate``
+    layers one on and it becomes the `evaluated` stage — 200 with the metrics.
+
+    What must never happen is a 200 carrying invented numbers. CI passes this
+    response to ``gate.py --baseline``, and a baseline of 0.0 accuracy would
+    make every candidate look like an improvement.
+    """
+    response = client.get("/metadata")
+    assert response.status_code in (200, 404), response.text
+    body = response.json()
+
+    if response.status_code == 404:
+        assert body["evaluated"] is False
+        return
+
+    assert body["evaluated"] is True
+    for key in ("accuracy", "macro_f1", "p95_latency_ms", "model_version"):
+        assert key in body, f"/metadata is missing {key}"
+    assert 0.0 < body["accuracy"] <= 1.0
+    # The report inside the image must describe the image serving it.
+    assert body["model_version"] == client.get("/readyz").json()["model_version"]
 
 
 # --------------------------------------------------------------------------

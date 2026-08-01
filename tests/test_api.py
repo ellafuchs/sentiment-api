@@ -10,6 +10,7 @@ this file, the change broke the API, not just the model.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -207,3 +208,54 @@ def test_readyz_is_503_when_no_model_is_loaded(client):
     response = client.get("/readyz")
     assert response.status_code == 503
     assert response.json() == {"ready": False, "reason": "model not loaded"}
+
+
+# --------------------------------------------------------------------------
+# /metadata — the artifact reporting its own scores
+#
+# What makes the regression check possible: CI fetches this from the live
+# service and passes it as the baseline a candidate must not fall below.
+# --------------------------------------------------------------------------
+
+
+def test_metadata_serves_the_baked_report(client, tmp_path, monkeypatch):
+    report = {"accuracy": 0.91, "macro_f1": 0.905, "p95_latency_ms": 42.0}
+    path = tmp_path / "eval_report.json"
+    path.write_text(json.dumps(report))
+    monkeypatch.setenv("EVAL_REPORT_PATH", str(path))
+
+    body = client.get("/metadata").json()
+    assert body == {"evaluated": True, **report}
+
+
+def test_metadata_is_404_when_the_image_was_never_evaluated(client, tmp_path, monkeypatch):
+    """A build with no report says so, rather than inventing one.
+
+    CI reads a 404 here as "no baseline" and reports that out loud. The
+    alternative — returning zeros, or an empty object — would make an
+    unevaluated image look like one that scored nothing, and a gate comparing
+    against 0.0 accuracy passes everything.
+    """
+    monkeypatch.setenv("EVAL_REPORT_PATH", str(tmp_path / "absent.json"))
+
+    response = client.get("/metadata")
+    assert response.status_code == 404
+    assert response.json()["evaluated"] is False
+
+
+def test_metadata_is_500_when_the_report_is_corrupt(client, tmp_path, monkeypatch):
+    """Unparseable is not the same as absent, and must not read as 'no baseline'.
+
+    A 404 tells CI to skip the regression check. Truncated JSON returning 404
+    would silently disable the check on a service that believes it has scores.
+    """
+    path = tmp_path / "eval_report.json"
+    path.write_text('{"accuracy": 0.9')
+    monkeypatch.setenv("EVAL_REPORT_PATH", str(path))
+
+    assert client.get("/metadata").status_code == 500
+
+
+def test_metadata_is_served(client):
+    """Structural guard: CI fetches this path by name from the live service."""
+    assert "/metadata" in client.get("/openapi.json").json()["paths"]

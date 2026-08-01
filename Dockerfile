@@ -55,7 +55,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MODEL_DIR=/app/.model_cache \
-    MODELS_CONFIG_PATH=/app/models.yaml
+    MODELS_CONFIG_PATH=/app/models.yaml \
+    EVAL_REPORT_PATH=/app/eval_report.json
 
 COPY --from=builder --chown=app:app /app/.venv       /app/.venv
 COPY --from=builder --chown=app:app /app/.model_cache /app/.model_cache
@@ -75,3 +76,27 @@ EXPOSE 8080
 # One worker on purpose: each worker loads its own copy of the model, so two
 # workers cost 268MB extra for no throughput gain on a single CPU.
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
+
+
+# --- stage 3: evaluated ------------------------------------------------------
+# The same image, plus the scores it earned. `infra/evaluate.sh` builds
+# `runtime`, runs it, scores it with the 200-example golden set, and then builds
+# this stage — so the report inside an image is always the report produced *by
+# that image*, not by a rebuild that might differ.
+#
+# This is the stage that ships. `/metadata` serves the file, which is what lets
+# CI ask the live service what it scored and refuse a candidate that is worse.
+# Without it the regression check has no baseline and skips forever, which looks
+# identical to passing.
+#
+# **What the extra layer costs, stated honestly.** The artifact that gets
+# deployed is not byte-identical to the one that was evaluated — it has one more
+# layer. That layer contains a single 2KB JSON file and no code, no weights and
+# no configuration the service reads to decide anything: `/metadata` is the only
+# thing that opens it, and `/metadata` cannot change a prediction. Every layer
+# below is byte-identical and shared, so the digest of the code and weights is
+# unchanged. It is a real caveat and it is the smallest available one — the
+# alternative is a service that does not know its own scores.
+FROM runtime AS evaluated
+
+COPY --chown=app:app eval_report.json /app/eval_report.json
