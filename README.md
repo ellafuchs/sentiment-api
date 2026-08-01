@@ -196,6 +196,43 @@ anywhere, forever, for anyone who reads it. Here there's no key to leak.
 
 ---
 
+## It grades the model before you merge
+
+Open a pull request and it gets scored automatically — the built image, against the same 200
+sentences, judged and posted back as a comment:
+
+```
+## Gate
+
+✅ **Gate passed**
+
+| check | value | threshold | margin | |
+|---|---:|---:|---:|:-:|
+| accuracy | 0.9 | min 0.88 | +0.02 | ✅ |
+| macro_f1 | 0.8997 | min 0.87 | +0.02975 | ✅ |
+| p95_latency_ms | 48.3 | max 300 | +251.7 | ✅ |
+| accuracy vs live | 0.9 | min 0.88 | +0.02 | ✅ |
+```
+
+The last row is the one that's easy to miss and the whole reason this exists.
+
+Fixed limits alone aren't enough. `min_accuracy` is 0.88, so a model scoring **0.885** passes — while
+being worse than the **0.900** already serving your users. Do that three times and every single PR
+was "acceptable" and the model is now noticeably worse. Nobody did anything wrong; the limit just
+never noticed.
+
+So the gate also asks the **live service** what it scored, and compares. That's what
+`accuracy vs live` is. The deployed container carries its own report card:
+
+```bash
+curl -s https://sentiment-y3vui2lbqq-zf.a.run.app/metadata
+```
+
+If production can't be reached, the comment says so **in bold** rather than quietly checking less.
+"No baseline" and "beat the baseline" both produce a green tick, and they are not the same thing.
+
+---
+
 ## The files
 
 | File | What it does | When it runs |
@@ -275,6 +312,7 @@ make help
 | `make lint` | Check code style |
 | `make build` | Build the container image |
 | `make test-container` | Test the built image over HTTP |
+| `make evaluate` | Score the built image and bake the report into it |
 | `make run-container` | Serve from the image, like the cloud will |
 | `make push` | Build for amd64 and push it, tagged with the git SHA |
 | `make candidate` | Deploy to Cloud Run serving **no** traffic, and smoke test it |
@@ -296,8 +334,8 @@ make help
 | [x] | 200 test sentences and a pass/fail gate | 1 |
 | [x] | Package it into a container | 2 |
 | [x] | Put it on Google Cloud so it has a real web address | 3 |
-| [x] | **Make changing the model deploy itself automatically** | **4** |
-| [ ] | Make it refuse to deploy a worse model | 5 |
+| [x] | Make changing the model deploy itself automatically | 4 |
+| [x] | **Make it refuse to deploy a worse model** | **5** |
 | [ ] | Make it faster with a different inference engine | 7 |
 | [ ] | Train your own model and run it through the same checks | 8 |
 
@@ -305,8 +343,7 @@ The phase numbers are the ones used in commits and `docs/`. They skip around bec
 (0.5, 1.5) were corrections that never got a box here, and phase 6 — proving the gate *blocks* — is
 a demonstration rather than a feature.
 
-**A push to main ships it.** The next phase makes the pipeline refuse to ship a *worse* model — right
-now it checks the service works, not that it's still any good.
+**A push to main ships it, and a pull request gets graded before it can.**
 
 ---
 

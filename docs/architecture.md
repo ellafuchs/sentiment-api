@@ -424,4 +424,99 @@ deploys it again. Rolling back buys time; it is not the fix.
 
 It proves the service **works**. It does not prove the model is any **good** — `run_eval.py` and
 `gate.py` run nowhere in CI, so a commit that swapped in a worse model would sail through every step
-here as long as it answered 200s at a reasonable speed. That is Phase 5.
+here as long as it answered 200s at a reasonable speed. That is Phase 5, below.
+
+---
+
+# Phase 5 — the gate in CI
+
+`cd.yml` answers *does it work*. `ci.yml` answers *is it still any good*, which is a different
+question and the one this project exists to ask.
+
+## Two jobs, because they fail differently
+
+| Job | What it runs | On what | Time |
+|---|---|---|---|
+| `check` | lint + 124 unit and contract tests | the source | ~1 min |
+| `gate` | build → `test-container` → score 200 examples → judge | the artifact | ~6 min |
+
+They run in parallel and neither gates the other. A lint error and a regression are independent
+problems, and a reviewer should learn about both in one pass rather than one per push.
+
+## The artifact reports its own scores
+
+The chain that makes the regression check possible:
+
+```
+build runtime image  →  run it  →  score it  →  layer the report in  →  push  →  deploy
+                                                       │
+                                                       └─ /metadata serves it
+```
+
+`infra/evaluate.sh` owns those four steps and **both** workflows call it — `ci.yml` to judge a
+candidate, `cd.yml` so the revision that reaches Cloud Run knows what it scored. That second one is
+easy to skip and fatal to skip: with an unevaluated image in production the regression check has no
+baseline and skips forever, which in a green check looks exactly like passing.
+
+Verified in production:
+
+```
+$ curl -s https://sentiment-y3vui2lbqq-zf.a.run.app/metadata
+  evaluated     True
+  accuracy      0.9
+  macro_f1      0.899749
+  model         hf:distilbert-base-uncased-finetuned-sst-2-english@714eb0fa89d2
+```
+
+So "how good is the thing serving production?" is a question you ask production, not one you answer
+from a wiki page or from the CI logs of whichever run you believe deployed it.
+
+### Only accuracy crosses deployments
+
+The gate compares `accuracy` and nothing else against the baseline, deliberately. The latency inside
+a report was measured wherever that image happened to be evaluated — a particular runner, on a
+particular day. Comparing it to a candidate measured somewhere else is the mistake Phases 2, 3 and 4
+each made in turn; there was no reason to make it a fourth time. Latency is still gated, but against
+the absolute ceiling in `models.yaml`, which is a floor on sanity rather than a comparison.
+
+### What the extra layer costs
+
+The deployed artifact is not byte-identical to the evaluated one — it carries one more layer. That
+layer is a 2 KB JSON file: no code, no weights, no configuration the service reads to decide
+anything. `/metadata` is the only thing that opens it, and `/metadata` cannot change a prediction.
+Every layer below reported `CACHED` on the rebuild, so the code and weights are the same bytes.
+
+It is a real caveat and it is the smallest one available. The alternative is a service that cannot
+say what it scored.
+
+## Absolute floors are not enough on their own
+
+`models.yaml` sets `min_accuracy: 0.88`. A model at **0.885** clears that while being meaningfully
+worse than the **0.900** already serving traffic. Ship three of those and the floor still passes.
+
+That is how quality erodes: not in one obviously-bad PR, but one individually-acceptable one at a
+time. The baseline check is what catches it — `accuracy vs live` appears as a fourth row in the
+verdict whenever production answered `/metadata`.
+
+When it did not answer, the PR comment says so **in bold**. "No baseline" and "passed the baseline"
+are different claims that produce the same green check, and the one thing a gate must never do is
+look like it ran when it didn't.
+
+## The verdict goes in the PR, not the logs
+
+`gate.py --markdown` has existed since Phase 1 and had never been called. It writes the table that
+`ci.yml` posts as a comment, updated in place rather than appended, so the PR shows the current
+answer instead of a scroll-back of every push.
+
+It posts on failure too. A red X tells a reviewer that something broke; it does not tell them
+accuracy fell from 0.90 to 0.885, which is exactly what they need in order to decide whether to
+override.
+
+## Least privilege, again
+
+`ci.yml` has no `id-token: write`. It runs on pull requests — unreviewed code — and has no business
+being able to obtain a credential that can deploy. Reading `/metadata` needs none, because the
+service is public.
+
+That is the same argument as the runtime account holding only `logging.logWriter`, and as CI being
+unable to call `setIamPolicy`, one layer further out.
