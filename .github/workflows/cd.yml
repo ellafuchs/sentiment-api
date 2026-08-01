@@ -74,10 +74,24 @@ jobs:
       - name: Authorise Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
+      # uv is needed before the build now, not after: `make push` scores the
+      # image on the way through, and scoring runs eval/run_eval.py.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       # The runner is amd64, so the `--platform linux/amd64` inside `build-amd64`
       # is a no-op here. It is not redundant: it is what makes the arm64 laptop
       # produce the same artifact as this runner.
-      - name: Build and push
+      #
+      # `make push` is build -> score -> bake the report in -> push. The image
+      # that reaches Cloud Run therefore knows what it scored and serves it at
+      # /metadata, which is the baseline ci.yml compares the next candidate
+      # against. Deploying an unevaluated image would leave that check with
+      # nothing to compare to, and a regression check that never runs is
+      # indistinguishable from one that always passes.
+      - name: Build, score and push
         run: make push
         env:
           PROJECT: ${{ vars.GCP_PROJECT }}
@@ -95,21 +109,6 @@ jobs:
           REPO: ${{ vars.GCP_AR_REPO }}
           SERVICE: ${{ vars.GCP_SERVICE }}
           SA_EMAIL: ${{ vars.GCP_RUNTIME_SA }}
-
-      # uv only enters the picture here — the build and deploy steps above need
-      # nothing but docker and gcloud.
-      #
-      # This installs torch to run a test that speaks nothing but HTTP, because
-      # `test_deploy.py` imports `app.config` for the expected model version and
-      # torch is a project dependency. That is a deliberate trade: the
-      # alternative is re-deriving the version string inside the test, i.e. a
-      # second copy of the rule that decides what a model is called, which is
-      # the exact duplication the test exists to catch. The cache makes it ~30s
-      # after the first run.
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
 
       - name: Smoke test the candidate
         run: make smoke

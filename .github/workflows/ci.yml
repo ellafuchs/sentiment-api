@@ -1,0 +1,177 @@
+# =============================================================================
+# The gate, on every pull request.
+#
+# `cd.yml` proves the service WORKS. This proves the model is still GOOD, which
+# is a different question and the one this whole project exists to answer. A
+# commit that swapped in a worse model would sail through every step of CD:
+# it builds, it starts, it answers 200s at a reasonable speed. It is just wrong
+# more often, and nothing in the deploy path can tell.
+#
+# Two jobs, because they fail differently and at different speeds:
+#
+#   check   lint + 124 unit and contract tests. ~1 minute. Catches typos,
+#           broken contracts, style. Runs on the source.
+#
+#   gate    build the image, test the artifact, score it against 200 known
+#           answers, and judge that score — against the floors in models.yaml
+#           AND against whatever is serving production right now. ~6 minutes.
+#           Runs on the thing you would actually deploy.
+#
+# `check` does not gate `gate`. They run in parallel: a lint error and a
+# regression are independent problems and a reviewer should learn about both in
+# one pass rather than one per push.
+#
+# The result is posted as a PR comment, not left in the logs. A red X tells a
+# reviewer that something failed; it does not tell them accuracy fell from 0.90
+# to 0.885, which is what they need to decide whether to override.
+# =============================================================================
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# No `id-token: write` here, unlike cd.yml. Reading production's /metadata needs
+# no credentials because the service is public, and this workflow runs on pull
+# requests — code that has not been reviewed yet. It should not be able to
+# obtain a token that can deploy.
+permissions:
+  contents: read
+  pull-requests: write   # to post the gate table as a comment
+
+# One run per PR. A force-push mid-run makes the earlier result meaningless, and
+# unlike a deploy there is nothing half-finished to leave behind.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: make install
+
+      # Same commands the Makefile gives you locally. If these pass on a laptop
+      # and fail here, that divergence is itself the bug.
+      - run: make lint
+      - run: make test
+
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: make install
+
+      # The artifact, not the source tree. Everything below drives this image
+      # over HTTP the way Cloud Run will.
+      - name: Build the image
+        run: make build
+
+      - name: Test the image
+        run: make test-container
+
+      # Starts the image, scores it against the 200-example golden set, and
+      # layers the report back in. Writes eval_report.json.
+      - name: Score it
+        run: make evaluate
+
+      # --- the baseline -------------------------------------------------------
+      # What production scored, read from production. This is the check that
+      # absolute floors cannot make: a model at 0.885 clears min_accuracy 0.88
+      # while being meaningfully worse than the 0.90 already serving, and
+      # without this, quality erodes one individually-acceptable PR at a time.
+      #
+      # No credentials needed — the service is public. That is also why this
+      # step cannot be trusted to succeed: it depends on a live service over the
+      # public internet. It must never fail the build, and it must never be
+      # silently absent either, so both outcomes are printed.
+      - name: Fetch production's scores
+        id: baseline
+        continue-on-error: true
+        run: |
+          URL="${{ vars.SERVICE_URL }}"
+          if [ -z "$URL" ]; then
+            echo "no SERVICE_URL variable set — skipping the regression check" >&2
+            exit 0
+          fi
+          if curl -fsS --max-time 30 "$URL/metadata" -o baseline.json; then
+            python3 -c "import json; b=json.load(open('baseline.json')); print('production accuracy:', b.get('accuracy'), '—', b.get('model_version'))"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "production did not answer /metadata — no baseline for this run" >&2
+          fi
+
+      - name: Judge it
+        id: verdict
+        run: |
+          args=(--markdown gate.md)
+          if [ "${{ steps.baseline.outputs.found }}" = "true" ]; then
+            args+=(--baseline baseline.json)
+          fi
+          uv run python -m eval.gate "${args[@]}"
+
+      # `always()`: the comment matters MOST when the gate failed. Skipping it
+      # on failure would leave the reviewer with a red X and a link to logs,
+      # which is the situation this step exists to prevent.
+      - name: Comment on the PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let table;
+            try {
+              table = fs.readFileSync('gate.md', 'utf8');
+            } catch {
+              table = '⚠️ **The gate did not produce a verdict.**\n\n' +
+                      'Something failed before `eval.gate` ran — the build, the ' +
+                      'container tests, or scoring. See the run log.';
+            }
+
+            const baseline = '${{ steps.baseline.outputs.found }}' === 'true'
+              ? 'Compared against the model currently serving production.'
+              : '⚠️ No production baseline for this run — **absolute floors only**. ' +
+                'A model worse than what is live can pass this.';
+
+            const body = [
+              '## Gate', '', table, '', '---', '', baseline, '',
+              `<sub>Scored the built image against 200 golden examples · \`${context.sha.slice(0, 7)}\`</sub>`,
+            ].join('\n');
+
+            // Update one comment rather than adding one per push, so the PR
+            // shows the current verdict instead of a history to scroll through.
+            const marker = '## Gate';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const mine = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith(marker));
+
+            if (mine) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: mine.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
