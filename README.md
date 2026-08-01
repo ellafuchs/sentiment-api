@@ -160,9 +160,15 @@ answers. That is what baking the model into the image buys you.
 
 ---
 
-## It deploys itself
+## It deploys when you say so
 
-You don't run any of those commands any more. Push to `main` and GitHub does it:
+Pushing to `main` costs nothing and changes nothing about what's live. When you're ready to ship:
+
+```bash
+make ship
+```
+
+GitHub then does the whole thing for you:
 
 ```
 build  →  deploy serving 0%  →  smoke test  →  10% for 60s  →  100%
@@ -188,6 +194,24 @@ on a good day. A rollback path you've never used is a belief, not a plan.
 It's also on **Actions → Rollback → Run workflow**, which is two taps in the GitHub mobile app. Same
 script, second trigger — because an emergency control that needs your laptop has a precondition
 nobody checks until the emergency.
+
+Because deploying is now a decision rather than a side effect of pushing, `main` and production can
+disagree. That's the cost of the trade, and this is how you see it:
+
+```bash
+make drift
+```
+
+```
+live      sentiment-00028-gaj   commit 2a47cd4
+local     main                  commit 74167c6
+
+1 commit(s) committed but NOT deployed:
+  74167c6 Phase 5: record why branch protection is off
+```
+
+Every revision is labelled with the git SHA it was built from, so that's a lookup rather than a
+guess. Run it before assuming production has your latest fix.
 
 **No password is stored anywhere for this.** GitHub proves who it is with a signed token that expires
 in an hour, and Google is configured to trust it — but only from this repository, only on `main`. The
@@ -325,6 +349,8 @@ make help
 | `make release` | Give the candidate 10% of traffic, watch, then 100% |
 | `make rollback` | Send traffic back to the previous revision (also: Actions → Rollback) |
 | `make deploy` | `candidate` + `release` in one go |
+| `make ship` | Deploy the pushed `main` to Cloud Run, via CI |
+| `make drift` | What production is running vs what you've committed |
 | `make url` | Print the live service address |
 | `make candidate-url` | Print the candidate revision's own address |
 | `make score URL=…` | Grade whatever is listening at that address |

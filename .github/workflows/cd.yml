@@ -29,10 +29,33 @@
 # this repository on this branch.
 # =============================================================================
 name: cd
+# -----------------------------------------------------------------------------
+# DEPLOYS ARE TRIGGERED, NOT AUTOMATIC.
+#
+# This used to run on every push to main. It no longer does, deliberately, as of
+# 2026-08-01: pushing should be free. A seven-minute build and a new Cloud Run
+# revision for a typo is a tax on committing, and a tax on committing is how you
+# end up with fewer, larger, harder-to-review commits.
+#
+#     make ship        # deploy main, now
+#     make drift       # what is live vs what is committed
+#
+# What this gives up, stated plainly: `main` and production can now disagree.
+# The rest of the design already assumed they might — every revision is labelled
+# with its git SHA and pinned by digest precisely so "what is actually running?"
+# is answerable rather than assumed — but with a push trigger the answer was
+# always "the tip of main", and now it is not. `make drift` is what closes that
+# gap; use it before you assume production has your latest fix.
+#
+# Restoring the old behaviour is three lines:
+#
+#     on:
+#       push:
+#         branches: [main]
+#       workflow_dispatch:
+# -----------------------------------------------------------------------------
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # Least privilege, and `id-token: write` is the one that matters — it is what

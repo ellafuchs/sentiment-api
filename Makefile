@@ -137,6 +137,22 @@ deploy: candidate release  ## candidate + release in one go
 smoke:  ## Drive a deployed revision over HTTP (needs DEPLOY_URL)
 	uv run pytest -m deploy
 
+# --- shipping, on purpose --------------------------------------------------
+# A push to main no longer deploys. These two are what replaced it: one says
+# what is live, the other changes it.
+
+.PHONY: drift
+drift:  ## What production is running, versus what you have committed
+	@infra/drift.sh
+
+.PHONY: ship
+ship:  ## Deploy the pushed main branch to Cloud Run (build + canary in CI)
+	@git diff --quiet HEAD -- || { echo "working tree is dirty — commit first"; exit 1; }
+	@test -z "$$(git log --oneline @{upstream}..HEAD 2>/dev/null)" \
+		|| { echo "you have unpushed commits — \`git push\` first, or they will not ship"; exit 1; }
+	gh workflow run cd.yml --ref $$(git rev-parse --abbrev-ref HEAD)
+	@echo "  triggered. watch it with:  gh run watch \$$(gh run list --workflow=cd.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
 .PHONY: url
 url:  ## Print the live service URL
 	@gcloud run services describe $(SERVICE) --project=$(PROJECT) \
