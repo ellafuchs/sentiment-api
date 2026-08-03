@@ -365,6 +365,7 @@ make help
 | [x] | 200 test sentences and a pass/fail gate | 1 |
 | [x] | Package it into a container | 2 |
 | [x] | Put it on Google Cloud so it has a real web address | 3 |
+| [x] | **Rebuild the whole cloud setup from scratch, and prove it comes out the same** | **3.5** |
 | [x] | Make changing the model deploy itself automatically | 4 |
 | [x] | **Make it refuse to deploy a worse model** | **5** |
 | [ ] | Make it faster with a different inference engine | 7 |
@@ -373,6 +374,11 @@ make help
 The phase numbers are the ones used in commits and `docs/`. They skip around because two phases
 (0.5, 1.5) were corrections that never got a box here, and phase 6 — proving the gate *blocks* — is
 a demonstration rather than a feature.
+
+Phase 3.5 was a drill, not a feature: a second cloud environment built from `infra/setup.sh` alone,
+proved identical to production, then destroyed. It found two real bugs in the first-deploy path —
+code that had shipped but had never once been executed, because production's first deploy was done
+by hand. See [docs/bootstrap-drill.md](docs/bootstrap-drill.md).
 
 **A push to main ships it, and a pull request gets graded before it can.**
 
