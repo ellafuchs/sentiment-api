@@ -20,8 +20,8 @@ step below gives you the command, **the output it should print**, and what failu
 something doesn't match, paste it into chat rather than improvising; a mismatch is a finding, and
 finding them is the point.
 
-You run every command yourself. Step 12 needs `infra/teardown.sh`, which does not exist yet — you
-write it, from the requirements near the end of this guide.
+You run every command yourself. `infra/teardown.sh` now exists and its refusal paths are already
+tested — see the section after step 12 for what it does and what remains untested about it.
 
 ### The rule this drill obeys
 
@@ -56,6 +56,7 @@ Fill this in **as you go**, not from memory afterwards.
 | 1 clone | | | |
 | 2 env block | | | |
 | 3 project + billing | | | |
+| 3b teardown on empty project | | | |
 | 4 `setup.sh` | | | |
 | 5 `make push` | | | |
 | 6 `make candidate` (fails) | | | |
@@ -73,7 +74,7 @@ Do not take these on trust. Two are already confirmed by reading the code; the r
 | # | Predicted gap | Expected | Actual |
 |---|---|---|---|
 | 1 | `setup.sh` cannot create the project or link billing | confirmed at step 3 | |
-| 2 | No teardown script exists | confirmed by reading — you write it | |
+| 2 | No teardown script exists | **confirmed, and closed** — [infra/teardown.sh](../infra/teardown.sh) now exists | |
 | 3 | `setup.sh` must run **twice**; nothing says so until a 403 | confirmed at step 6 | |
 | 4 | **Defaults fail open** — an empty environment deploys to *production* ([Makefile:94](../Makefile#L94), [infra/lib.sh:12](../infra/lib.sh#L12), [infra/setup.sh:21](../infra/setup.sh#L21)) | confirmed by reading | |
 | 5 | Eight GitHub `vars.*` were set by hand and are recorded in no file; `setup.sh` prints two of them | confirmed by reading | |
@@ -160,6 +161,32 @@ successfully`, then `billingEnabled: true`.
 **If `projects create` is refused for quota:** you have hit the trial project limit. That is
 finding #1 arriving early and harder than predicted — log it and stop; the rest of the drill needs
 a project.
+
+---
+
+## 3b — Prove the teardown on an empty project
+
+Thirty seconds, free, and it is the only chance to exercise every *"already absent"* branch of
+`teardown.sh` before step 12 depends on them. The project exists and holds nothing, so there is
+nothing here to lose.
+
+```bash
+bash infra/teardown.sh --dry-run
+```
+
+```bash
+bash infra/teardown.sh
+```
+
+**Expect,** both times: preflight passes (your account, then `project … (ACTIVE)`), then all four
+resources reported as either already gone or *"API not enabled here, nothing to delete"* — the APIs
+are not enabled until step 4 — then the `verifying` block passing, then exit 0.
+
+**If instead it dies at preflight:** `$PROJECT` does not match the project you just created, or
+billing did not link. Fix that before step 4, not after.
+
+**If it reports deleting anything:** stop. You are pointed at a project that is not empty, and the
+only non-empty ones you own are real.
 
 ---
 
@@ -461,19 +488,29 @@ did not deploy. Either means the drill leaked into production. Stop and say so.
 
 ## 12 — Teardown
 
-Run the script you wrote (see the next section).
+Look before you delete. See the next section for what the script does and how it has been tested.
 
 ```bash
 cd ~/drill
-bash infra/teardown.sh
+bash infra/teardown.sh --dry-run
 ```
+
+**Expect** four `~ would delete` lines and nothing else — this is your last look, and it changes
+nothing.
 
 ```bash
 bash infra/teardown.sh
 ```
 
-**Expect** the second run to print ticks, change nothing, and exit 0. Then confirm the copy is
-really gone:
+**Expect** four `-` lines, then a `verifying` block with four ✓, then `torn down in Ns`. If the
+verify block fails, the script says which resource survived and gives you the query that found it.
+
+```bash
+bash infra/teardown.sh
+```
+
+**Expect** the second run to print `✓ … already gone` for all four, still run the verify block, and
+exit 0. Then confirm the copy is really gone:
 
 ```bash
 gcloud run services list --project="$PROJECT" --region="$REGION"
@@ -487,46 +524,65 @@ because a project id is unrecoverable. An empty project with no service and no i
 
 ---
 
-## `infra/teardown.sh` — you write this
+## `infra/teardown.sh` — what it does
 
-There is no teardown in `infra/` today: the project can only ever go forwards. That is finding #2,
-and this is the fix.
+Finding #2 was that the project could only ever go forwards. [infra/teardown.sh](../infra/teardown.sh)
+is the fix. It deletes four things in this order:
 
-Requirements, not code. Copy the `say`/`ok`/`add`/`retry` helpers from `setup.sh` — and note that
-every `gcloud … describe` guard in that script has a matching `delete` here.
+1. the Cloud Run service
+2. the Artifact Registry repo (with its cleanup policy and every image version)
+3. the `roles/logging.logWriter` binding
+4. the runtime service account
 
-**Deletes, in this order** (the service first — it holds the SA reference and the images):
+**Flags:**
 
-```bash
-gcloud run services delete "$SERVICE" --project="$PROJECT" --region="$REGION" --quiet
+- `--dry-run` — print what would be deleted, delete nothing.
+- `--i-know-this-is-production` — override the deny-list. Requires a terminal and a typed
+  confirmation of the project id. There is no `--force` and no `-f`.
 
-gcloud artifacts repositories delete "$REPO" --project="$PROJECT" --location="$REGION" --quiet
+**Safety properties.** `PROJECT` has no default and is fatal when unset — every other entry point in
+this repo falls back to production, and this one must not. `poc-bert-mlops-460289b` is on a
+case-insensitive deny-list, checked before any command runs. It never deletes the project, and never
+touches `~/.docker/config.json` — that credential helper keys on `me-west1-docker.pkg.dev`, the same
+host production pushes to, so "undo everything `setup.sh` did" would break `make push` against
+production from this laptop.
 
-gcloud projects remove-iam-policy-binding "$PROJECT" \
-  --member="serviceAccount:sentiment-run@${PROJECT}.iam.gserviceaccount.com" \
-  --role=roles/logging.logWriter --condition=None
+**Three things it does differently from the requirements originally written here**, each because the
+straightforward version is unsafe:
 
-gcloud iam service-accounts delete "sentiment-run@${PROJECT}.iam.gserviceaccount.com" \
-  --project="$PROJECT" --quiet
-```
+- **Guards use `list --filter`, not `describe`.** `describe` exits 1 for *absent*, for *no
+  permission* and for *API never enabled* alike, so a `describe`-guarded teardown aimed at a typo'd
+  project prints four ✓ and exits 0 — output identical to a clean second run. `list --filter` exits 0
+  with empty output, and a fatal preflight proves the project is reachable first. `setup.sh`'s guards
+  fail toward *doing the work*; a teardown's fail toward *claiming success*.
+- **The order is about intermediate states, not locks.** Artifact Registry holds no lien on images —
+  deleting the repo under a live service succeeds. Service-first matters because nothing may be left
+  *present-but-broken*, and with `--min-instances 0` a service that cannot pull 5xxs on every request.
+- **The binding is removed before the account, using the member string the filter found.** Deleting a
+  service account does not remove bindings naming it; the member becomes
+  `deleted:serviceAccount:…?uid=…`, removal by email then fails, and the next run's guard sees
+  nothing and prints a ✓.
 
-**Two safety properties, because this is the only script in the repo that destroys things:**
+It also **detects and reports** the CI half — `deployer@…`, its three roles, and any WIF pool —
+without deleting it, since deleting a pool reserves its id for 30 days. This drill leaves
+`GITHUB_REPO` unset so it never fires here, which is exactly why it would go unnoticed on a later
+drill that sets it.
 
-1. **It refuses to run against `poc-bert-mlops-460289b`** — a hard deny-list, overridable only by a
-   flag you have to type on purpose. Note the asymmetry with the rest of the repo: everywhere else,
-   an unset `PROJECT` silently *means* production. Here that must be fatal.
-2. **It never deletes the project itself.** A GCP project id is unrecoverable once deleted. That
-   stays a human decision made in the console.
+**Already tested, before you run anything** (these need no project and no network):
 
-**Idempotent** — a second run prints ticks and changes nothing, exactly like `setup.sh`. Guard every
-delete with the matching `describe`.
+| | Result |
+|---|---|
+| `bash -n` syntax | clean |
+| `PROJECT` unset | refuses, and production's id appears nowhere in the output |
+| deny-list with `PATH` emptied | refuses before any external command runs |
+| …with whitespace, with mixed case | refuses |
+| `--dry-run` against production | refuses — dry-run does not exempt the deny-list |
+| `--force`, `-f`, `--dry-runn` | each refused as an unknown argument |
+| override with stdin not a TTY | refuses — it cannot be piped or scripted |
+| nonexistent project id | dies at preflight, does **not** print four ✓ and exit 0 |
 
-**How to test it, in this order:**
-
-1. Point it at production and confirm it **refuses**. Do this first, before it has ever run
-   successfully — a deny-list you test last is a deny-list you test after it could have hurt you.
-2. Run it against the drill project. It should delete all four things.
-3. Run it again. All ticks, exit 0, nothing changed.
+What is **not** yet tested, and only step 12 can test: the four delete calls themselves, the
+tombstone path, and the verification retry.
 
 ---
 
