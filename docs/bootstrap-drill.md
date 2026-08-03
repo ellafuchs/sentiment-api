@@ -84,6 +84,8 @@ Do not take these on trust. Two are already confirmed by reading the code; the r
 | 9 | **`deploy.sh` cannot do a first-ever deploy.** `serving_revision` returns non-zero when no service exists; `pipefail` + `set -e` then kill the script before it prints anything. `make candidate` outputs only `Error 1` | **found by running it**, 2026-08-03 — fixed in `lib.sh`. Production's first deploy was by hand, so this path had never run | |
 | 10 | **A clean clone is not a clean build.** The laptop's Docker cache still held production's layers, so step 5 built in 1s instead of ~10min and never downloaded torch or the weights | **found by running it** — to test the real path, prune the builder cache first | |
 | 11 | **The push does not upload most of the image.** Artifact Registry mounted 6 of 12 layers from *production's* repo, since the blobs already existed on the same host | **found by running it** — the drill proves less about the push than it appears to | |
+| 12 | **The deploy/release split cannot bootstrap itself.** `--no-traffic` is rejected when creating a service — there is no prior revision to hand traffic back to. So a first deploy must take traffic | **found by running it**, 2026-08-03 — fixed in `deploy.sh`, which now detects the case and says so | |
+| 13 | Every fix to a script forces a rebuild+push before the deploy can be retried, because the image tag is the git SHA | **found by running it** — correct by design, but it makes iterating on `infra/` slow. `TAG=<sha> make candidate` reuses an existing image | |
 
 ---
 
@@ -295,13 +297,32 @@ memory ceiling.
 
 ## 6 — Deploy at zero traffic — this fails the first time, on purpose
 
-**Read this first, added 2026-08-03 after the drill ran.** On a genuinely fresh project this step did
-not reach the 403 below. It printed nothing at all except `make: *** [candidate] Error 1`, because
-`serving_revision` ([infra/lib.sh:43](../infra/lib.sh#L43)) exited non-zero when no service existed
-and `pipefail` killed `deploy.sh` at line 69, before its first line of output. Fixed with `|| true`
-on the describe — a service that does not exist is a legitimate answer, not an error. If you are
-running the drill from a commit that predates that fix, this is what you will see, and it is
-finding #9.
+**Read this first, added 2026-08-03 after the drill ran.** On a genuinely fresh project this step hit
+*two* failures before it could reach the 403 below, neither of them predicted. Both are now fixed;
+both are findings.
+
+**Finding #9.** It printed nothing at all except `make: *** [candidate] Error 1`.
+`serving_revision` ([infra/lib.sh:43](../infra/lib.sh#L43)) exited non-zero when no service existed,
+`pipefail` propagated that, and `set -e` killed `deploy.sh` at line 69 before its first line of
+output. Fixed with `|| true` on the describe — a service that does not exist is a legitimate answer,
+not an error.
+
+**Finding #12.** Then it got further and gcloud refused outright:
+
+```
+ERROR: (gcloud.run.deploy) --no-traffic not supported when creating a new service.
+```
+
+`--no-traffic` means "give LATEST's traffic back to whichever revision LATEST pointed at before this
+deploy". On a new service there is no such revision, so the flag is undefined — **the deploy/release
+split cannot bootstrap itself.** The first revision of a new service necessarily serves traffic,
+because there is nothing else to serve it. `deploy.sh` now detects that case, drops `--no-traffic`,
+keeps `--tag=candidate`, and says so rather than quietly deploying to 100% under a script whose whole
+promise is that deploying is not releasing. It is safe exactly when it happens: no users, and not yet
+public.
+
+Both existed because production's first deploy was done by hand. The entire first-deploy path had
+never been executed.
 
 ```bash
 make candidate

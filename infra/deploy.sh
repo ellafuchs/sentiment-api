@@ -68,6 +68,31 @@ fi
 # way back would point at the thing being replaced.
 PREVIOUS="$(serving_revision)"
 
+# --- is there a service at all? ----------------------------------------------
+# `--no-traffic` cannot create a service. Its semantics are "give the traffic
+# currently on LATEST to whichever revision LATEST pointed at before this
+# deploy" — on a brand-new service there is no such revision, so gcloud rejects
+# it outright:
+#
+#     ERROR: (gcloud.run.deploy) --no-traffic not supported when creating a new service.
+#
+# So the deploy/release split cannot bootstrap itself: the first revision of a
+# new service necessarily serves traffic, because there is nothing else to serve
+# it. That is the same reality release.sh:168 already handles ("no previous
+# revision — going straight to 100%"), one script later.
+#
+# This is safe precisely when it happens: a service that does not exist yet has
+# no users, and setup.sh has not yet made it public. It is still worth saying
+# out loud rather than quietly deploying to 100% under a script whose entire
+# promise is that deploying is not releasing.
+#
+# Found by the Phase 3.5 rebuild drill. Production's first deploy was done by
+# hand, so this path had never once been executed.
+FIRST_DEPLOY=""
+if ! describe >/dev/null 2>&1; then
+  FIRST_DEPLOY=1
+fi
+
 say "resolving ${IMAGE}:${TAG}"
 
 # Tag -> digest. Fails loudly if the tag was never pushed, which is a far better
@@ -101,14 +126,23 @@ printf '  tag      %s\n  digest   %s\n  serving  %s\n' \
 # Granting CI that permission would have fixed the message by making the deploy
 # identity able to expose a private service to the internet. That is a strictly
 # worse trade. `infra/setup.sh` owns the binding, where a human runs it.
-say "deploying ${SERVICE} to ${REGION} (no traffic)"
+TRAFFIC_FLAGS=(--no-traffic --tag=candidate)
+if [[ -n "${FIRST_DEPLOY}" ]]; then
+  TRAFFIC_FLAGS=(--tag=candidate)
+  say "creating ${SERVICE} in ${REGION} — FIRST revision, so it takes traffic"
+  printf '  --no-traffic cannot create a service: there is no previous revision\n'
+  printf '  to hand the traffic back to. Nothing is public yet (setup.sh owns\n'
+  printf '  that binding), so this revision serves nobody until you release it.\n'
+else
+  say "deploying ${SERVICE} to ${REGION} (no traffic)"
+fi
+
 gcloud run deploy "${SERVICE}" \
   --image="${IMAGE}@${DIGEST}" \
   --project="${PROJECT}" \
   --region="${REGION}" \
   --platform=managed \
-  --no-traffic \
-  --tag=candidate \
+  "${TRAFFIC_FLAGS[@]}" \
   --memory=2Gi \
   --cpu=2 \
   --min-instances=0 \
@@ -124,6 +158,14 @@ gcloud run deploy "${SERVICE}" \
 REVISION="$(describe --format='value(status.latestCreatedRevisionName)')"
 
 CANDIDATE_URL="$(candidate_url)"
+
+# On a first deploy the tag and the whole service point at the same revision, so
+# if the tagged URL has not materialised yet the service's own URL addresses the
+# identical thing. Falling back beats dying on a distinction that does not exist
+# when there is only one revision.
+if [[ -z "${CANDIDATE_URL}" && -n "${FIRST_DEPLOY}" ]]; then
+  CANDIDATE_URL="$(describe --format='value(status.url)')"
+fi
 
 [[ -n "${CANDIDATE_URL}" ]] || die "deployed ${REVISION} but it has no candidate URL."
 
@@ -158,11 +200,23 @@ done
 [[ -n "${READY}" ]] || die "deployed ${REVISION} but ${CANDIDATE_URL}/readyz never answered 200 (last: ${LAST_CODE}).
     Check:  gcloud run services logs read ${SERVICE} --region ${REGION}"
 
-say "deployed, serving no traffic"
+if [[ -n "${FIRST_DEPLOY}" ]]; then
+  say "created, and serving 100% — there was no other revision"
+else
+  say "deployed, serving no traffic"
+fi
 printf '  revision   %s\n  digest     %s\n  candidate  %s\n  previous   %s\n' \
   "${REVISION}" "${DIGEST}" "${CANDIDATE_URL}" "${PREVIOUS:-<none>}"
-printf '\n  Not released. Next:  DEPLOY_URL=%s uv run pytest -m deploy\n' "${CANDIDATE_URL}"
-printf '                 then:  make release\n'
+if [[ -n "${FIRST_DEPLOY}" ]]; then
+  # Do not claim "not released" here. It would be false, and the whole point of
+  # this script is that the claim is true.
+  printf '\n  Smoke test it:       DEPLOY_URL=%s uv run pytest -m deploy\n' "${CANDIDATE_URL}"
+  printf '  Then `make release` is a formality — it will report that this\n'
+  printf '  revision already serves 100%% and exit without moving anything.\n'
+else
+  printf '\n  Not released. Next:  DEPLOY_URL=%s uv run pytest -m deploy\n' "${CANDIDATE_URL}"
+  printf '                 then:  make release\n'
+fi
 
 # Hand the values to the next step when running under Actions. Writing to
 # $GITHUB_OUTPUT rather than re-deriving them downstream keeps one source of
