@@ -48,8 +48,16 @@ def test_repo_default_config_is_valid():
 
 
 def test_model_version_is_traceable():
+    """The version string must name the model and pin it to a specific commit.
+
+    Derived from the config rather than hard-coded: the point is that `version`
+    stays traceable to whatever is configured, and a hard-coded string fails on
+    every legitimate model swap instead — a test that cries wolf on correct
+    changes gets edited to shut it up, which is how it stops being a check.
+    """
     cfg = load_config()
-    assert cfg.model.version == "hf:distilbert-base-uncased-finetuned-sst-2-english@714eb0fa89d2"
+    assert cfg.model.version == f"hf:{cfg.model.id}@{cfg.model.revision[:12]}"
+    assert len(cfg.model.revision) == 40
 
 
 def test_runtime_defaults_to_pytorch(tmp_path):

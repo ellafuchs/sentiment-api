@@ -1,7 +1,10 @@
 model:
   source: hf
-  id: distilbert-base-uncased-finetuned-sst-2-english
-  revision: 714eb0fa89d2f80546fda750413ed43d93601a13
+  id: textattack/bert-base-uncased-SST-2
+  revision: 95f0f6f859b35c8ff0863ae3cd4e2dbc702c0ae2
+  labels:
+    0: NEGATIVE
+    1: POSITIVE
 
 runtime:
   kind: pytorch
