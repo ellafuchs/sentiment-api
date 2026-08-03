@@ -1,0 +1,605 @@
+<title>Sentiment API — the architecture, in four pictures</title>
+
+<style>
+  :root {
+    --ground: #F3F5F8;
+    --raised: #FFFFFF;
+    --ink: #141B24;
+    --muted: #5A6674;
+    --rule: #D3DAE3;
+    --rule-soft: #E4E9EF;
+    --accent: #1F47C7;
+    --accent-soft: #E7ECFA;
+    --pass: #146C43;
+    --pass-soft: #E1F2E9;
+    --fail: #AE2B21;
+    --fail-soft: #FBE7E5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0F141A;
+      --raised: #161D26;
+      --ink: #E4EAF1;
+      --muted: #8A97A6;
+      --rule: #2A343F;
+      --rule-soft: #202932;
+      --accent: #6B92FF;
+      --accent-soft: #17233D;
+      --pass: #39C57F;
+      --pass-soft: #12291F;
+      --fail: #FF7264;
+      --fail-soft: #2C1815;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --ground: #F3F5F8;
+    --raised: #FFFFFF;
+    --ink: #141B24;
+    --muted: #5A6674;
+    --rule: #D3DAE3;
+    --rule-soft: #E4E9EF;
+    --accent: #1F47C7;
+    --accent-soft: #E7ECFA;
+    --pass: #146C43;
+    --pass-soft: #E1F2E9;
+    --fail: #AE2B21;
+    --fail-soft: #FBE7E5;
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0F141A;
+    --raised: #161D26;
+    --ink: #E4EAF1;
+    --muted: #8A97A6;
+    --rule: #2A343F;
+    --rule-soft: #202932;
+    --accent: #6B92FF;
+    --accent-soft: #17233D;
+    --pass: #39C57F;
+    --pass-soft: #12291F;
+    --fail: #FF7264;
+    --fail-soft: #2C1815;
+  }
+
+  :root {
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color-scheme: light dark;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 50rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 6vw, 5rem) clamp(1.1rem, 4vw, 2rem) 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(3rem, 7vw, 4.75rem);
+  }
+
+  /* ---- type ---- */
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+  }
+  .eyebrow::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.85rem, 5.4vw, 3rem);
+    line-height: 1.06;
+    letter-spacing: -0.035em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: clamp(1.28rem, 3.4vw, 1.7rem);
+    line-height: 1.18;
+    letter-spacing: -0.025em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: 1.02rem;
+    letter-spacing: -0.012em;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  p { margin: 0; max-width: 65ch; }
+  strong { font-weight: 650; }
+
+  .lede {
+    font-size: clamp(1.06rem, 2.4vw, 1.22rem);
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 38ch;
+  }
+
+  .muted { color: var(--muted); }
+
+  .stack { display: flex; flex-direction: column; gap: 1.1rem; }
+  .stack-tight { display: flex; flex-direction: column; gap: 0.6rem; }
+  section { display: flex; flex-direction: column; gap: 1.4rem; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--rule-soft);
+    padding: 0.1em 0.36em;
+    border-radius: 2px;
+  }
+
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  /* ---- hero ---- */
+
+  .hero { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .hero-meta {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.1rem;
+  }
+  .hero-meta b { color: var(--ink); font-weight: 600; }
+
+  .claim {
+    border-left: 2px solid var(--accent);
+    padding: 0.15rem 0 0.15rem 1.25rem;
+    font-size: clamp(1.02rem, 2.3vw, 1.16rem);
+    line-height: 1.5;
+    max-width: 52ch;
+  }
+
+  /* ---- diagrams ---- */
+
+  .diagram {
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; width: 100%; height: auto; min-width: 27rem; }
+
+  svg text.th {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--ink);
+  }
+  svg text.ts {
+    font-family: var(--mono);
+    font-size: 11px;
+    fill: var(--muted);
+  }
+  svg .nb rect { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .nb text.th { fill: var(--accent); }
+  svg .nf rect { fill: var(--fail-soft); stroke: var(--fail); }
+  svg .nf text.th { fill: var(--fail); }
+  svg .frame rect { fill: none; stroke: var(--rule); }
+  svg .arr { stroke: var(--muted); stroke-width: 1.5px; fill: none; }
+  svg .arr-bad { stroke: var(--fail); stroke-width: 1.5px; fill: none; }
+
+  /* Marker heads are styled here, not with a var() presentation attribute —
+     var() in an SVG attribute value is not reliably supported. */
+  svg marker path.mk { fill: none; stroke: var(--muted); }
+  svg marker path.mk-bad { fill: none; stroke: var(--fail); }
+
+  .caption {
+    font-family: var(--mono);
+    font-size: 0.73rem;
+    color: var(--muted);
+    max-width: 60ch;
+  }
+
+  /* ---- config block ---- */
+
+  .term {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    line-height: 1.65;
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    white-space: pre;
+    font-variant-numeric: tabular-nums;
+  }
+  .term .dim { color: var(--muted); }
+  .term .hi { color: var(--accent); font-weight: 600; }
+  .term .bad { color: var(--fail); font-weight: 600; }
+  .term .good { color: var(--pass); font-weight: 600; }
+
+  /* ---- gate table ---- */
+
+  .gate {
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    overflow-x: auto;
+  }
+  .gate-head {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--pass);
+    background: var(--pass-soft);
+  }
+  .gate-head.is-fail { color: var(--fail); background: var(--fail-soft); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.79rem;
+    white-space: nowrap;
+  }
+  th, td { padding: 0.5rem 0.9rem; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-weight: 500;
+    color: var(--muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr + tr td { border-top: 1px solid var(--rule-soft); }
+  td.ok { color: var(--pass); }
+  td.no { color: var(--fail); }
+  tr.highlight td { background: var(--accent-soft); }
+
+  /* ---- two-column split ---- */
+
+  .split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .split-col {
+    background: var(--raised);
+    padding: 1.1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .split-where {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .split-col p { font-size: 0.92rem; }
+
+  /* ---- definition rows ---- */
+
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    display: grid;
+    grid-template-columns: minmax(9rem, 13rem) 1fr;
+    gap: 0.3rem 1.4rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--rule-soft);
+    font-size: 0.9rem;
+  }
+  .row:first-child { border-top: 1px solid var(--rule); }
+  .row dt { font-family: var(--mono); font-size: 0.8rem; font-weight: 600; }
+  .row dd { margin: 0; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.3rem;
+    font-family: var(--mono);
+    font-size: 0.73rem;
+    color: var(--muted);
+    line-height: 1.75;
+  }
+
+  @media (max-width: 32rem) {
+    .row { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="hero">
+    <div class="eyebrow">Sentiment API · architecture</div>
+    <h1>Four pictures and<br>what they leave out</h1>
+    <p class="lede">The model is one line of config. Everything below is the machinery that decides whether that line is allowed to change production.</p>
+    <div class="hero-meta">
+      <span>project <b>poc-bert-mlops-460289b</b></span>
+      <span>region <b>me-west1</b></span>
+      <span>service <b>sentiment</b></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="eyebrow">1 · the path a change takes</div>
+    <h2>A model swap is a pull request</h2>
+    <p>There is exactly one way for a different model to reach users, and it starts as a diff a human can read.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 680 532" role="img" xmlns="http://www.w3.org/2000/svg">
+        <title>The path a model swap takes from a config edit to production</title>
+        <desc>A vertical flow: editing models.yaml opens a pull request; CI runs the gate, which either blocks the change outright or lets it merge to main; make ship then triggers the CD workflow, which deploys to Cloud Run at zero traffic before canarying to full traffic.</desc>
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="mk" d="M2 1L8 5L2 9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="a1bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="mk-bad" d="M2 1L8 5L2 9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <g class="nb">
+          <rect x="230" y="40" width="220" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="58" text-anchor="middle" dominant-baseline="central">Edit models.yaml</text>
+          <text class="ts" x="340" y="78" text-anchor="middle" dominant-baseline="central">the only swap point</text>
+        </g>
+        <line x1="340" y1="96" x2="340" y2="134" class="arr" marker-end="url(#a1)"/>
+
+        <g class="nb">
+          <rect x="230" y="144" width="220" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="162" text-anchor="middle" dominant-baseline="central">CI — the gate</text>
+          <text class="ts" x="340" y="182" text-anchor="middle" dominant-baseline="central">lint, tests, eval vs prod</text>
+        </g>
+        <line x1="450" y1="172" x2="460" y2="172" class="arr-bad" marker-end="url(#a1bad)"/>
+        <g class="nf">
+          <rect x="470" y="150" width="170" height="44" rx="6" stroke-width="1"/>
+          <text class="th" x="555" y="172" text-anchor="middle" dominant-baseline="central">never reaches prod</text>
+        </g>
+        <line x1="340" y1="200" x2="340" y2="238" class="arr" marker-end="url(#a1)"/>
+
+        <g class="nb">
+          <rect x="230" y="248" width="220" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="266" text-anchor="middle" dominant-baseline="central">Merge to main</text>
+          <text class="ts" x="340" y="286" text-anchor="middle" dominant-baseline="central">gate green, human merges</text>
+        </g>
+        <line x1="340" y1="304" x2="340" y2="342" class="arr" marker-end="url(#a1)"/>
+
+        <g class="nb">
+          <rect x="230" y="352" width="220" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="370" text-anchor="middle" dominant-baseline="central">make ship — CD</text>
+          <text class="ts" x="340" y="390" text-anchor="middle" dominant-baseline="central">triggered, not automatic</text>
+        </g>
+        <line x1="340" y1="408" x2="340" y2="446" class="arr" marker-end="url(#a1)"/>
+
+        <g class="nb">
+          <rect x="230" y="456" width="220" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="474" text-anchor="middle" dominant-baseline="central">Cloud Run</text>
+          <text class="ts" x="340" y="494" text-anchor="middle" dominant-baseline="central">0% → 10% → 100%</text>
+        </g>
+      </svg>
+    </div>
+
+    <p>The config carries two independent axes and the rules that judge them. <code>model.*</code> is <em>what</em> runs; <code>runtime.*</code> is <em>how</em> it executes; <code>gate.*</code> is what it has to beat.</p>
+
+    <div class="term">model:
+  source: hf
+  id: distilbert-base-uncased-finetuned-sst-2-english
+  revision: <span class="hi">714eb0fa89d2…</span>        <span class="dim"># full 40-char commit SHA, validated</span>
+
+runtime:
+  kind: pytorch                  <span class="dim"># onnx is a new class, not a refactor</span>
+
+gate:
+  min_accuracy: 0.88
+  min_macro_f1: 0.87
+  max_p95_latency_ms: 300
+  <span class="hi">max_accuracy_regression: 0.02</span>  <span class="dim"># vs the model currently deployed</span></div>
+
+    <p><strong>Merging is a human act, and the deploy is a second one.</strong> Branch protection is deliberately off — a solo project where the gate is advisory-by-policy teaches more than one where GitHub enforces it, and the enforcement is one setting away when it needs to be real. A push to <code>main</code> ships nothing; <code>make ship</code> triggers the pipeline, and <code>make drift</code> answers the question that separation creates — what is live, versus what you have committed.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">2 · the release</div>
+    <h2>Deploying is not releasing</h2>
+    <p>Those are two decisions, so they are two commands. A new revision exists on real hardware, reachable, warmed and tested, while every user is still being answered by the old one.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 680 126" role="img" xmlns="http://www.w3.org/2000/svg">
+        <title>The four traffic states of a Cloud Run release</title>
+        <desc>Left to right: a candidate revision serves zero percent of traffic behind its own tagged URL; it then takes ten percent for sixty seconds while being compared against the incumbent; it is promoted to one hundred percent; and rollback is a single traffic change back to the previous revision.</desc>
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="mk" d="M2 1L8 5L2 9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="a2bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="mk-bad" d="M2 1L8 5L2 9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <g class="nb">
+          <rect x="50" y="40" width="130" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="115" y="58" text-anchor="middle" dominant-baseline="central">Candidate</text>
+          <text class="ts" x="115" y="78" text-anchor="middle" dominant-baseline="central">0%, own URL</text>
+        </g>
+        <line x1="180" y1="68" x2="190" y2="68" class="arr" marker-end="url(#a2)"/>
+
+        <g class="nb">
+          <rect x="200" y="40" width="130" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="265" y="58" text-anchor="middle" dominant-baseline="central">Canary</text>
+          <text class="ts" x="265" y="78" text-anchor="middle" dominant-baseline="central">10% for 60s</text>
+        </g>
+        <line x1="330" y1="68" x2="340" y2="68" class="arr" marker-end="url(#a2)"/>
+
+        <g class="nb">
+          <rect x="350" y="40" width="130" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="415" y="58" text-anchor="middle" dominant-baseline="central">Live</text>
+          <text class="ts" x="415" y="78" text-anchor="middle" dominant-baseline="central">100%</text>
+        </g>
+        <line x1="480" y1="68" x2="490" y2="68" class="arr-bad" marker-end="url(#a2bad)"/>
+
+        <g class="nf">
+          <rect x="500" y="40" width="130" height="56" rx="6" stroke-width="1"/>
+          <text class="th" x="565" y="58" text-anchor="middle" dominant-baseline="central">Rollback</text>
+          <text class="ts" x="565" y="78" text-anchor="middle" dominant-baseline="central">previous rev</text>
+        </g>
+      </svg>
+    </div>
+
+    <p>The candidate gets its own hostname — <code>candidate---sentiment-….run.app</code> — so it can be driven over HTTP by the deploy tests before it is allowed near a user. Both questions the three scripts need answered, <em>which revision is serving</em> and <em>where is the candidate</em>, are asked in exactly one place: <a href="../infra/lib.sh">infra/lib.sh</a>. The first attempt wrote that query three times, one copy was wrong, and the pipeline failed in CI on a query that had never been run locally.</p>
+
+    <div class="split">
+      <div class="split-col">
+        <div class="split-where">what the canary compares</div>
+        <p>Error rate and p95, candidate against the incumbent, measured from the same place at the same moment. The incumbent is timed at 100% <em>before</em> the split, so the two numbers share the same network and the distance cancels.</p>
+      </div>
+      <div class="split-col">
+        <div class="split-where">what it cannot see</div>
+        <p>Accuracy. Sixty seconds of synthetic probes cannot detect a model that is quietly wrong — only the gate can, before the deploy, by comparing to the scores production reports. That is the whole reason the next picture exists.</p>
+      </div>
+    </div>
+
+    <p class="caption">Rollback is a traffic change, not a rebuild: the previous revision stays built and configured. Measured at 22 s to a cold target, 4 s to a warm one.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">3 · the artifact</div>
+    <h2>The image carries its own report card</h2>
+    <p>One image is built per commit, tagged with the git SHA — never <code>latest</code>, because rollback has to be able to name an exact revision and <code>latest</code> makes "which image was that?" a question with no answer.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 680 210" role="img" xmlns="http://www.w3.org/2000/svg">
+        <title>What is inside the container image that ships</title>
+        <desc>The container image, tagged with the git SHA, holds three things: model weights baked in at build time from a pinned Hugging Face revision, an eval report containing the accuracy, macro F1 and p95 latency measured against that exact image, and the FastAPI app serving the predict and metadata endpoints.</desc>
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path class="mk" d="M2 1L8 5L2 9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
+
+        <g class="frame">
+          <rect x="60" y="40" width="560" height="150" rx="10" stroke-width="1"/>
+        </g>
+        <text class="th" x="80" y="66" dominant-baseline="central">Container image — the tag is the git SHA</text>
+
+        <g class="nb">
+          <rect x="80" y="90" width="160" height="80" rx="6" stroke-width="1"/>
+          <text class="th" x="160" y="114" text-anchor="middle" dominant-baseline="central">Model weights</text>
+          <text class="ts" x="160" y="138" text-anchor="middle" dominant-baseline="central">pinned HF revision</text>
+        </g>
+
+        <g class="nb">
+          <rect x="260" y="90" width="160" height="80" rx="6" stroke-width="1"/>
+          <text class="th" x="340" y="114" text-anchor="middle" dominant-baseline="central">eval_report.json</text>
+          <text class="ts" x="340" y="138" text-anchor="middle" dominant-baseline="central">accuracy, F1, p95</text>
+        </g>
+
+        <g class="nb">
+          <rect x="440" y="90" width="160" height="80" rx="6" stroke-width="1"/>
+          <text class="th" x="520" y="114" text-anchor="middle" dominant-baseline="central">FastAPI app</text>
+          <text class="ts" x="520" y="138" text-anchor="middle" dominant-baseline="central">/predict, /metadata</text>
+        </g>
+      </svg>
+    </div>
+
+    <p>Weights are baked in at build time, so the same git SHA produces the same behaviour forever and there is no Hub outage at cold start. The build then scores <em>that exact image</em> over a 200-example golden set and layers the report back into it as a final stage — which is what lets the running service answer <code>/metadata</code> with the scores it was measured at.</p>
+
+    <p><strong>That answer is a baseline for the next candidate.</strong> An unevaluated production image would make the regression check skip silently, and "no baseline" and "beat the baseline" produce the same green tick while being very different claims.</p>
+
+    <p class="caption">Cloud Run runs amd64; the laptop is arm64. Every image that ships is built <code>--platform linux/amd64</code>, which the container tests catch when it isn't.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">4 · the gate</div>
+    <h2>Two jobs, because they fail differently</h2>
+    <p><a href="../.github/workflows/ci.yml">ci.yml</a> splits into <code>check</code> — lint, unit and contract tests, seconds, no model download — and <code>gate</code>, which builds the image, drives it over HTTP, scores it, and only then does the part that matters: fetches the live model's scores from production and compares.</p>
+
+    <div class="gate">
+      <div class="gate-head">✓ Gate passed — posted as a comment on the PR</div>
+      <table>
+        <thead>
+          <tr><th>check</th><th>value</th><th>threshold</th><th>margin</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>accuracy</td><td>0.9</td><td>min 0.88</td><td class="ok">+0.02</td></tr>
+          <tr><td>macro_f1</td><td>0.8997</td><td>min 0.87</td><td class="ok">+0.0298</td></tr>
+          <tr><td>p95_latency_ms</td><td>41.91</td><td>max 300</td><td class="ok">+258.1</td></tr>
+          <tr class="highlight"><td>accuracy vs live</td><td>0.9</td><td>min 0.88</td><td class="ok">+0.02</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="claim">0.885 clears a floor of 0.88 and is still a regression against the 0.900 already serving users. Ship three of those and every individual change was acceptable while the model got visibly worse.</p>
+
+    <p>So the floors are necessary and not sufficient: the highlighted row is the relative check, and it is the one that catches slow decay. The verdict goes in the pull request rather than the logs, because a gate nobody reads is not a gate.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Who is allowed to do what</div>
+    <h2>No keys, and less permission than the plan asked for</h2>
+    <dl class="rows">
+      <div class="row"><dt>CI / CD auth</dt><dd>Workload Identity Federation — GitHub presents a short-lived OIDC token, scoped to this repository. There is no service-account JSON anywhere to leak.</dd></div>
+      <div class="row"><dt>Deploy identity</dt><dd>Can build, push and deploy revisions, and can shift traffic. Deliberately <em>cannot</em> call <code>run.services.setIamPolicy</code>.</dd></div>
+      <div class="row"><dt>Making it public</dt><dd>The <code>allUsers</code> invoker binding is on the service, not a revision, so it lives in <a href="../infra/setup.sh">setup.sh</a> where a human runs it. Granting CI that permission would let the deploy identity publish a private service to the internet.</dd></div>
+      <div class="row"><dt>Runtime identity</dt><dd>A dedicated service account whose only granted role is <code>logging.logWriter</code>. The container reaches nothing else.</dd></div>
+      <div class="row"><dt>Consequence</dt><dd>A fresh project needs <code>setup.sh</code> run twice — once before the service exists, once after — and nothing tells you so until a candidate returns 403.</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <div class="eyebrow">What this architecture does not check</div>
+    <h2>The honest list</h2>
+    <p>Written down so they stay <em>known</em> gaps rather than assumptions.</p>
+    <dl class="rows">
+      <div class="row"><dt>Drift after deploy</dt><dd>The largest gap. A green gate cannot see accuracy rotting as real inputs drift away from the golden set. Nothing here watches production quality over time.</dd></div>
+      <div class="row"><dt>Real traffic</dt><dd>There are no users, so the canary measures its own synthetic probes. It is a rehearsal of the mechanism, not validation on real load.</dd></div>
+      <div class="row"><dt>Shadow deploys</dt><dd>No path for a candidate to see a copy of live traffic, logged and compared but not served.</dd></div>
+      <div class="row"><dt>Fail-open defaults</dt><dd>An empty environment falls back to the production project. An unset <code>PROJECT</code> should refuse to deploy, not deploy to prod.</dd></div>
+      <div class="row"><dt>Terraform</dt><dd>Infrastructure is a shell script mirroring the commands actually typed. Honest and readable, but not the real tool.</dd></div>
+      <div class="row"><dt>Model registry</dt><dd>No MLflow-style artifact, metric and lineage store. Git SHAs and baked reports do the job at this scale.</dd></div>
+    </dl>
+    <p class="claim">What is built — immutable artifacts tagged by commit, a gate before deploy, a canary, one-command rollback, model version as reviewable config — is the real production shape. What changes at a larger company is the number of tools plugged into each box, not the boxes.</p>
+  </section>
+
+  <footer>
+    Per-phase findings and the numbers behind every claim · <a href="architecture.md">docs/architecture.md</a><br>
+    The narrative version, and the three failures worth telling · <a href="explainer.html">docs/explainer.html</a><br>
+    Live · <a href="https://sentiment-y3vui2lbqq-zf.a.run.app/metadata">sentiment-y3vui2lbqq-zf.a.run.app/metadata</a>
+  </footer>
+
+</div>
