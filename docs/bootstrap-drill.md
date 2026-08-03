@@ -81,6 +81,9 @@ Do not take these on trust. Two are already confirmed by reading the code; the r
 | 6 | The first-ever release has no incumbent to canary against | already handled ([infra/release.sh:168](../infra/release.sh#L168)) — confirm it | |
 | 7 | The gate has no `/metadata` baseline in a fresh environment | already handled ([ci.yml](../.github/workflows/ci.yml)) — confirm it | |
 | 8 | Image digests will **not** match production's | see step 10 — this is expected, not a defect | |
+| 9 | **`deploy.sh` cannot do a first-ever deploy.** `serving_revision` returns non-zero when no service exists; `pipefail` + `set -e` then kill the script before it prints anything. `make candidate` outputs only `Error 1` | **found by running it**, 2026-08-03 — fixed in `lib.sh`. Production's first deploy was by hand, so this path had never run | |
+| 10 | **A clean clone is not a clean build.** The laptop's Docker cache still held production's layers, so step 5 built in 1s instead of ~10min and never downloaded torch or the weights | **found by running it** — to test the real path, prune the builder cache first | |
+| 11 | **The push does not upload most of the image.** Artifact Registry mounted 6 of 12 layers from *production's* repo, since the blobs already existed on the same host | **found by running it** — the drill proves less about the push than it appears to | |
 
 ---
 
@@ -291,6 +294,14 @@ memory ceiling.
 ---
 
 ## 6 — Deploy at zero traffic — this fails the first time, on purpose
+
+**Read this first, added 2026-08-03 after the drill ran.** On a genuinely fresh project this step did
+not reach the 403 below. It printed nothing at all except `make: *** [candidate] Error 1`, because
+`serving_revision` ([infra/lib.sh:43](../infra/lib.sh#L43)) exited non-zero when no service existed
+and `pipefail` killed `deploy.sh` at line 69, before its first line of output. Fixed with `|| true`
+on the describe — a service that does not exist is a legitimate answer, not an error. If you are
+running the drill from a commit that predates that fix, this is what you will see, and it is
+finding #9.
 
 ```bash
 make candidate

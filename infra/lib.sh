@@ -40,7 +40,19 @@ describe() {
 _traffic_field() {
   # $1: python expression over `t`, selecting matching entries
   # $2: field to print
-  describe --format=json 2>/dev/null | python3 -c "
+  #
+  # `|| true` on the describe, because a service that does not exist yet is a
+  # legitimate answer — "nothing is serving" — not an error. Callers all treat
+  # an empty result that way already (deploy.sh:69 records it as the rollback
+  # target, release.sh:168 goes straight to 100%, rollback.sh:31 refuses).
+  #
+  # Without it, `set -o pipefail` in every caller propagates gcloud's non-zero
+  # exit even though the python below handles empty input, and `set -e` then
+  # kills the script *before it prints anything*. That is exactly what happened
+  # on the first-ever deploy into a fresh project during the Phase 3.5 drill:
+  # `make candidate` printed nothing but `Error 1`. Production's first deploy
+  # was done by hand, so this path had never run.
+  { describe --format=json 2>/dev/null || true; } | python3 -c "
 import sys, json
 try:
     traffic = json.load(sys.stdin).get('status', {}).get('traffic', [])
